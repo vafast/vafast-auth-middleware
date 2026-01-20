@@ -115,7 +115,7 @@ export function createAuthClient(config: AuthClientConfig) {
     }
   }
 
-  // 调用 auth-server API
+  // 调用 auth-server API（原始格式：HTTP 状态码判断成功/失败）
   async function callAuthApi<T>(
     path: string,
     body: Record<string, unknown>,
@@ -130,14 +130,16 @@ export function createAuthClient(config: AuthClientConfig) {
 
       const data = await response.json()
 
-      if (data.code === 0) {
-        return { data: data.data }
+      // 成功：HTTP 2xx，直接返回响应数据
+      if (response.ok) {
+        return { data: data as T }
       }
 
+      // 失败：HTTP 4xx/5xx
       return {
         error: {
           code: data.code || response.status,
-          message: data.message || '验证失败',
+          message: data.message || '请求失败',
         },
       }
     } catch (error) {
@@ -176,7 +178,7 @@ export function createAuthClient(config: AuthClientConfig) {
       appId: string
     ): Promise<ApiResult<{ valid: boolean; app?: AppInfo; message?: string }>> {
       return callAuthApi<{ valid: boolean; app?: AppInfo; message?: string }>(
-        '/authRestfulApi/verify/app',
+        '/authRestfulApi/apps/verify',
         { appId }
       )
     },
