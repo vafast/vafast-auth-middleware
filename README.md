@@ -151,6 +151,33 @@ import { auth, jwtAuth, apiKeyAuth, appValidator } from '@vafast/auth-middleware
 middleware: [auth, appValidator]
 ```
 
+### 类型导出
+
+```typescript
+import type {
+  UserInfo,              // 用户信息
+  ApiKeyInfo,            // API Key 信息
+  AppInfo,               // App 信息
+  RouteExtensions,       // 路由扩展类型（内置 webhook 支持）
+  WebhookConfigOptions,  // Webhook 配置选项
+} from '@vafast/auth-middleware'
+```
+
+**RouteExtensions 类型**：
+
+```typescript
+interface RouteExtensions {
+  /** Webhook 配置 */
+  readonly webhook?: boolean | {
+    eventKey?: string
+    include?: string[]
+    exclude?: string[]
+  }
+  /** 允许其他自定义扩展 */
+  readonly [key: string]: unknown
+}
+```
+
 ## API 参考
 
 ### createAuth(configOverrides?)
@@ -309,6 +336,38 @@ defineAuthRouteWithApp({
     // userInfo 和 app 都有完整类型
     return { userId: userInfo.id, appId: app.id }
   },
+})
+
+// 内置 webhook 支持
+defineAuthRouteWithApp({
+  method: 'POST',
+  path: '/create',
+  webhook: true,  // ✅ 有类型提示：boolean | { eventKey?, exclude?, include? }
+  middleware: [auth, appValidator],
+  handler: ({ userInfo, app }) => { ... },
+})
+
+// webhook 详细配置
+defineAuthRouteWithApp({
+  method: 'POST',
+  path: '/update',
+  webhook: {
+    eventKey: 'user.updated',
+    exclude: ['password', 'secret'],  // 排除敏感字段
+  },
+  middleware: [auth, appValidator],
+  handler: ({ userInfo, app }) => { ... },
+})
+
+// 支持自定义扩展字段（索引签名）
+defineAuthRouteWithApp({
+  method: 'POST',
+  path: '/admin',
+  webhook: true,
+  permission: 'admin',  // ✅ 自定义扩展
+  rateLimit: 100,       // ✅ 任意扩展
+  middleware: [auth, appValidator],
+  handler: ({ userInfo, app }) => { ... },
 })
 
 // 可选认证 + App 验证（C端公开接口）

@@ -680,153 +680,171 @@ export const requireUserAndApp = defineMiddleware(async (req, next) => {
 })
 
 
+// ============ Webhook 扩展类型 ============
+
+/**
+ * Webhook 配置选项（详细配置）
+ */
+export interface WebhookConfigOptions {
+  /** 自定义事件 key（默认从路径自动生成） */
+  eventKey?: string
+  /** 要包含在 payload 中的字段（白名单） */
+  include?: string[]
+  /** 要从 payload 中排除的字段（黑名单） */
+  exclude?: string[]
+}
+
+/**
+ * 路由扩展类型
+ *
+ * 内置 webhook 支持，同时允许自定义扩展字段
+ *
+ * @example
+ * ```typescript
+ * // webhook 有精确类型提示
+ * defineAuthRouteWithApp({
+ *   method: 'POST',
+ *   path: '/create',
+ *   webhook: true,
+ *   handler: ...
+ * })
+ *
+ * // 自定义扩展也支持（通过索引签名）
+ * defineAuthRouteWithApp({
+ *   method: 'POST',
+ *   path: '/admin',
+ *   webhook: { exclude: ['password'] },
+ *   permission: 'admin',  // 自定义扩展字段
+ *   rateLimit: 100,       // 其他扩展
+ *   handler: ...
+ * })
+ * ```
+ */
+export interface RouteExtensions {
+  /** Webhook 配置：启用后该路由的响应会触发 webhook 事件 */
+  readonly webhook?: boolean | WebhookConfigOptions
+  /** 允许其他自定义扩展字段 */
+  readonly [key: string]: unknown
+}
+
 // ============ 带上下文的路由定义器 ============
 
 /**
  * 带 UserInfo 上下文的路由定义器
- * 
- * 用于需要认证但不需要 app-id 的路由
- * 需配合认证中间件使用
- * 
+ *
+ * 内置 webhook 支持，用于需要认证但不需要 app-id 的路由
+ *
  * @example
  * ```typescript
  * import { defineAuthRoute, requireUser } from '@vafast/auth-middleware'
- * 
+ *
  * defineAuthRoute({
  *   method: 'GET',
  *   path: '/profile',
  *   middleware: [requireUser],
- *   handler: ({ userInfo }) => {
- *     // userInfo 自动有类型
- *     return { id: userInfo.id }
- *   }
+ *   handler: ({ userInfo }) => ({ id: userInfo.id })
+ * })
+ *
+ * // 带 webhook
+ * defineAuthRoute({
+ *   method: 'POST',
+ *   path: '/update',
+ *   webhook: true,
+ *   handler: ({ userInfo }) => ({ ... })
  * })
  * ```
  */
-export const defineAuthRoute = withContext<{ userInfo: UserInfo }>()
+export const defineAuthRoute = withContext<{ userInfo: UserInfo }, RouteExtensions>()
 
 /**
  * 带可选 UserInfo 上下文的路由定义器
- * 
- * 用于可能有/没有认证的路由
- * 
- * @example
- * ```typescript
- * defineOptionalAuthRoute({
- *   method: 'GET',
- *   path: '/public',
- *   handler: ({ userInfo }) => {
- *     // userInfo 可能为 undefined
- *     return { loggedIn: !!userInfo }
- *   }
- * })
- * ```
+ *
+ * 内置 webhook 支持
  */
-export const defineOptionalAuthRoute = withContext<{ userInfo?: UserInfo }>()
+export const defineOptionalAuthRoute = withContext<{ userInfo?: UserInfo }, RouteExtensions>()
 
 /**
  * 带 ApiKey 上下文的路由定义器
- * 
- * 用于需要 API Key 认证的路由
- * 需配合 [authenticateApiKey, requireApiKey] 中间件使用
+ *
+ * 内置 webhook 支持
  */
-export const defineApiKeyRoute = withContext<ApiKeyContext>()
+export const defineApiKeyRoute = withContext<ApiKeyContext, RouteExtensions>()
 
 /**
  * 带 UserInfo 和 app 上下文的路由定义器（最常用）
- * 
- * 用于需要认证且需要 app 验证的路由
- * 需配合 [auth, appValidator] 中间件使用
- * 
+ *
+ * 内置 webhook 支持，用于需要认证且需要 app 验证的路由
+ *
  * @example
  * ```typescript
  * import { auth, appValidator, defineAuthRouteWithApp } from '@vafast/auth-middleware'
- * 
+ *
+ * // 普通路由
+ * defineAuthRouteWithApp({
+ *   method: 'GET',
+ *   path: '/info',
+ *   middleware: [auth, appValidator],
+ *   handler: ({ userInfo, app }) => ({ userId: userInfo.id, appId: app.id })
+ * })
+ *
+ * // 带 webhook
+ * defineAuthRouteWithApp({
+ *   method: 'POST',
+ *   path: '/create',
+ *   webhook: true,
+ *   middleware: [auth, appValidator],
+ *   handler: ({ userInfo, app }) => ({ ... })
+ * })
+ *
+ * // webhook 详细配置
  * defineAuthRouteWithApp({
  *   method: 'POST',
  *   path: '/update',
- *   middleware: [auth, appValidator],
- *   handler: ({ userInfo, app }) => {
- *     // userInfo 和 app 都有完整类型
- *     return { userId: userInfo.id, appId: app.id, appName: app.name }
- *   }
+ *   webhook: { exclude: ['password', 'secret'] },
+ *   handler: ({ userInfo, app }) => ({ ... })
  * })
  * ```
  */
-export const defineAuthRouteWithApp = withContext<{ userInfo: UserInfo; app: AppInfo }>()
+export const defineAuthRouteWithApp = withContext<{ userInfo: UserInfo; app: AppInfo }, RouteExtensions>()
 
 /**
  * 只带 app 上下文的路由定义器
- * 
- * 用于需要 app 验证但不需要用户认证的路由
- * 需配合 appValidator 中间件使用（注入完整 AppInfo）
- * 
- * @example
- * ```typescript
- * import { appValidator, defineRouteWithApp } from '@vafast/auth-middleware'
- * 
- * defineRouteWithApp({
- *   method: 'GET',
- *   path: '/app-info',
- *   middleware: [appValidator],
- *   handler: ({ app }) => {
- *     return { appId: app.id, appName: app.name }
- *   }
- * })
- * ```
+ *
+ * 内置 webhook 支持
  */
-export const defineRouteWithApp = withContext<{ app: AppInfo }>()
+export const defineRouteWithApp = withContext<{ app: AppInfo }, RouteExtensions>()
 
 /**
  * 可选认证 + app 上下文的路由定义器
- * 
- * 用于需要 app 验证但用户认证可选的路由（C端公开接口）
- * 需配合 [auth（可选）, appValidator] 中间件使用
- * 
+ *
+ * 内置 webhook 支持
+ *
  * @example
  * ```typescript
  * import { auth, appValidator, defineOptionalAuthRouteWithApp } from '@vafast/auth-middleware'
- * 
- * // 方式1：使用可选认证中间件（推荐）
- * defineOptionalAuthRouteWithApp({
- *   method: 'POST',
- *   path: '/notices',
- *   middleware: [auth, appValidator], // auth 失败不会报错，只是 userInfo 为 undefined
- *   handler: ({ userInfo, app }) => {
- *     if (userInfo) {
- *       // 已登录用户：返回个性化数据
- *     } else {
- *       // 未登录用户：返回基础数据
- *     }
- *     return { appId: app.id }
- *   }
- * })
- * 
- * // 方式2：只使用 appValidator（如果完全不需要认证）
+ *
  * defineOptionalAuthRouteWithApp({
  *   method: 'GET',
- *   path: '/public-info',
+ *   path: '/public',
  *   middleware: [appValidator],
- *   handler: ({ app }) => {
- *     return { appId: app.id, appName: app.name }
+ *   handler: ({ userInfo, app }) => {
+ *     // 已登录用户有 userInfo
+ *     return { appId: app.id }
  *   }
  * })
  * ```
  */
-export const defineOptionalAuthRouteWithApp = withContext<{ userInfo?: UserInfo; app: AppInfo }>()
-
+export const defineOptionalAuthRouteWithApp = withContext<{ userInfo?: UserInfo; app: AppInfo }, RouteExtensions>()
 
 /**
  * 带完整认证上下文的路由定义器
- * 
- * 包含 userInfo、apiKey（可选）和 app
- * 用于混合认证场景
+ *
+ * 内置 webhook 支持，包含 userInfo、apiKey（可选）和 app
  */
-export const defineFullAuthRoute = withContext<{
-  userInfo: UserInfo
-  apiKey?: ApiKeyInfo
-  app: AppInfo
-}>()
+export const defineFullAuthRoute = withContext<
+  { userInfo: UserInfo; apiKey?: ApiKeyInfo; app: AppInfo },
+  RouteExtensions
+>()
 
 // ============ 语义化函数导出 ============
 // 更清晰的命名，推荐使用

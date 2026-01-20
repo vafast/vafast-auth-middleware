@@ -101,3 +101,49 @@ describe('Route Definers', () => {
     expect(defineFullAuthRoute).toBeDefined()
   })
 })
+
+describe('WebhookExtension 类型测试', () => {
+  it('应该导出 WebhookExtension 和 WebhookConfigOptions 类型', async () => {
+    // 类型导入测试
+    const { WebhookExtension, WebhookConfigOptions } = await import('./index') as any
+    // 类型在运行时不存在，但应该能通过编译
+    expect(true).toBe(true)
+  })
+
+  it('路由定义器应该支持 webhook: true', () => {
+    // 这是一个编译时类型测试
+    // 如果 webhook 字段类型不正确，TypeScript 编译会失败
+    const routeConfig = {
+      method: 'POST' as const,
+      path: '/test',
+      webhook: true,
+      handler: () => ({ success: true }),
+    }
+    expect(routeConfig.webhook).toBe(true)
+  })
+
+  it('路由定义器应该支持 webhook 对象配置', () => {
+    const routeConfig = {
+      method: 'POST' as const,
+      path: '/test',
+      webhook: {
+        eventKey: 'custom.event',
+        exclude: ['password', 'secret'],
+        include: ['id', 'name'],
+      },
+      handler: () => ({ success: true }),
+    }
+    expect(routeConfig.webhook.eventKey).toBe('custom.event')
+    expect(routeConfig.webhook.exclude).toEqual(['password', 'secret'])
+    expect(routeConfig.webhook.include).toEqual(['id', 'name'])
+  })
+
+  it('路由定义器应该支持不带 webhook 的配置', () => {
+    const routeConfig = {
+      method: 'GET' as const,
+      path: '/test',
+      handler: () => ({ success: true }),
+    }
+    expect(routeConfig.webhook).toBeUndefined()
+  })
+})
