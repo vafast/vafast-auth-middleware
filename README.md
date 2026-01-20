@@ -63,7 +63,7 @@ export const routes = defineRoutes({
 ### 方式二：手动配置
 
 ```typescript
-import { authenticateJwt, validateApp, requireAuth } from '@vafast/auth-middleware'
+import { authenticateJwt, validateApp, requireUserAndApp } from '@vafast/auth-middleware'
 
 const jwtAuth = authenticateJwt({
   client: {
@@ -165,7 +165,7 @@ const {
   auth,              // 混合认证中间件
   appValidator,      // App 验证（required: true）
   appValidatorOptional, // App 验证（required: false）
-  requireAuth,       // 需要登录 Guard
+  requireUserAndApp,       // 需要登录 + App Guard
   requireApiKey,     // 需要 API Key Guard
   // 路由定义器（类型推断辅助）
   defineAuthRoute,         // { userInfo: UserInfo }

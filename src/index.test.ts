@@ -5,7 +5,7 @@ import {
   authenticateApiKey,
   authenticate,
   validateApp,
-  requireAuth,
+  requireUserAndApp,
   requireApiKey,
   defineAuthRoute,
   defineOptionalAuthRoute,
@@ -81,8 +81,8 @@ describe('validateApp', () => {
 })
 
 describe('Guards', () => {
-  it('应该导出 requireAuth guard', () => {
-    expect(typeof requireAuth).toBe('function')
+  it('应该导出 requireUserAndApp guard', () => {
+    expect(typeof requireUserAndApp).toBe('function')
   })
 
   it('应该导出 requireApiKey guard', () => {

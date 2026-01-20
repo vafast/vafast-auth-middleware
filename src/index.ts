@@ -98,11 +98,11 @@ function getEnvConfig() {
 export function createAuthClient(config?: AuthClientConfig) {
   const env = getEnvConfig()
   const baseUrl = config?.baseUrl || env.baseUrl
-  
+
   if (!baseUrl) {
     throw new Error('缺少 baseUrl 配置。请传入 baseUrl 参数或设置 AUTH_API_BASE_URL 环境变量')
   }
-  
+
   const apiKeyId = config?.apiKeyId ?? env.apiKeyId ?? ''
   const apiKeySecret = config?.apiKeySecret ?? env.apiKeySecret ?? ''
   const timeout = config?.timeout ?? env.timeout ?? 5000
@@ -546,12 +546,12 @@ export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAp
 
     // 不验证，创建最小化 app 对象
     if (!verify) {
-      return next({ 
-        app: { 
-          id: appId, 
-          name: '', 
-          status: 'active' 
-        } 
+      return next({
+        app: {
+          id: appId,
+          name: '',
+          status: 'active'
+        }
       })
     }
 
@@ -646,10 +646,38 @@ export const requireApiKey = defineMiddleware(async (req, next) => {
   return next()
 })
 
-// ============ 别名（向后兼容）============
+// ============ requireUserAndApp（与 auth-server 对齐）============
 
-/** @deprecated 请使用 requireUser */
-export const requireAuth = requireUser
+/**
+ * 要求用户已认证且有 app
+ * 
+ * 同时检查上下文中 userInfo 和 app 是否存在
+ * 需配合 [auth, appValidator] 中间件使用
+ * 
+ * @example
+ * ```ts
+ * middleware: [auth, appValidator, requireUserAndApp]
+ * ```
+ */
+export const requireUserAndApp = defineMiddleware(async (req, next) => {
+  const ctx = getLocals<{ userInfo?: UserInfo; app?: AppInfo }>(req)
+
+  if (!ctx?.userInfo) {
+    return Response.json(
+      { code: 401, message: '未登录或用户信息缺失' },
+      { status: 401 }
+    )
+  }
+
+  if (!ctx?.app) {
+    return Response.json(
+      { code: 400, message: '缺少有效的 app-id' },
+      { status: 400 }
+    )
+  }
+
+  return next()
+})
 
 
 // ============ 带上下文的路由定义器 ============
@@ -662,12 +690,12 @@ export const requireAuth = requireUser
  * 
  * @example
  * ```typescript
- * import { defineAuthRoute, requireAuth } from '@vafast/auth-middleware'
+ * import { defineAuthRoute, requireUser } from '@vafast/auth-middleware'
  * 
  * defineAuthRoute({
  *   method: 'GET',
  *   path: '/profile',
- *   middleware: [requireAuth],
+ *   middleware: [requireUser],
  *   handler: ({ userInfo }) => {
  *     // userInfo 自动有类型
  *     return { id: userInfo.id }
