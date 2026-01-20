@@ -679,3 +679,18 @@ export const defineFullAuthRoute = withContext<{
   app: AppInfo
 }>()
 
+// ============ 语义化别名导出 ============
+// 更清晰的命名，推荐使用
+
+/** JWT + API Key 混合认证（推荐） */
+export { authenticate as authJwtAndApiKey }
+
+/** 仅 JWT 认证 */
+export { authenticateJwt as authJwt }
+
+/** 仅 API Key 认证 */
+export { authenticateApiKey as authApiKey }
+
+/** 验证 App ID */
+export { validateApp as validateAppId }
+
