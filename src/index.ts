@@ -500,8 +500,7 @@ export function authenticate(options?: AuthMiddlewareOptions) {
 
 /** App 验证上下文 */
 export interface ValidateAppContext {
-  app?: AppInfo
-  appId?: string
+  app: AppInfo
 }
 
 /**
@@ -539,26 +538,34 @@ export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAp
       if (required) {
         return Response.json({ code: 400, message: '缺少必需的请求头: app-id' }, { status: 400 })
       }
+      // required: false 时不注入 app
       return next()
     }
 
-    // 不验证，只返回 appId
+    // 不验证，创建最小化 app 对象
     if (!verify) {
-      return next({ appId })
+      return next({ 
+        app: { 
+          id: appId, 
+          name: '', 
+          status: 'active' 
+        } 
+      })
     }
 
     // 调用 auth-server 验证
     const result = await client.verifyApp(appId)
 
-    if (result.data?.valid && result.data.app) {
-      return next({ app: result.data.app, appId })
+    if (!result.data?.valid || !result.data.app) {
+      if (required) {
+        return Response.json({ code: 400, message: result.data?.message || '无效的 app-id' }, { status: 400 })
+      }
+      // required: false 时也不注入无效的 app
+      return next()
     }
 
-    if (required) {
-      return Response.json({ code: 400, message: result.data?.message || '无效的 app-id' }, { status: 400 })
-    }
-
-    return next({ appId })
+    // 统一返回完整的 app 对象
+    return next({ app: result.data.app })
   })
 }
 
@@ -597,7 +604,7 @@ export const requireUser = defineMiddleware(async (req, next) => {
 /**
  * 要求 App 已验证
  * 
- * 检查上下文中 app 或 appId 是否存在，没有则返回 400
+ * 检查上下文中 app 是否存在，没有则返回 400
  * 需配合 validateApp 中间件使用
  * 
  * @example
@@ -607,7 +614,7 @@ export const requireUser = defineMiddleware(async (req, next) => {
  */
 export const requireApp = defineMiddleware(async (req, next) => {
   const ctx = getLocals<ValidateAppContext>(req)
-  if (!ctx?.app && !ctx?.appId) {
+  if (!ctx?.app) {
     return Response.json(
       { code: 400, message: '缺少有效的 app-id' },
       { status: 400 }
@@ -696,23 +703,22 @@ export const defineOptionalAuthRoute = withContext<{ userInfo?: UserInfo }>()
 export const defineApiKeyRoute = withContext<ApiKeyContext>()
 
 /**
- * 带 UserInfo 和 appId 上下文的路由定义器
+ * 带 UserInfo 和 app 上下文的路由定义器（最常用）
  * 
- * 用于需要认证且需要 app-id 的路由（最常用）
- * 需配合 [authenticate, requireAuth, appValidator] 中间件使用
+ * 用于需要认证且需要 app 验证的路由
+ * 需配合 [auth, appValidator] 中间件使用
  * 
  * @example
  * ```typescript
- * import { defineAuthRouteWithApp, createAuth } from '@vafast/auth-middleware'
- * const { auth, appValidator, requireAuth } = createAuth()
+ * import { auth, appValidator, defineAuthRouteWithApp } from '@vafast/auth-middleware'
  * 
  * defineAuthRouteWithApp({
  *   method: 'POST',
  *   path: '/update',
- *   middleware: [auth, appValidator, requireAuth],
+ *   middleware: [auth, appValidator],
  *   handler: ({ userInfo, app }) => {
- *     // userInfo 和 app 都有类型
- *     return { userId: userInfo.id, appId: app.id }
+ *     // userInfo 和 app 都有完整类型
+ *     return { userId: userInfo.id, appId: app.id, appName: app.name }
  *   }
  * })
  * ```
@@ -723,9 +729,62 @@ export const defineAuthRouteWithApp = withContext<{ userInfo: UserInfo; app: App
  * 只带 app 上下文的路由定义器
  * 
  * 用于需要 app 验证但不需要用户认证的路由
- * 需配合 appValidator 中间件使用
+ * 需配合 appValidator 中间件使用（注入完整 AppInfo）
+ * 
+ * @example
+ * ```typescript
+ * import { appValidator, defineRouteWithApp } from '@vafast/auth-middleware'
+ * 
+ * defineRouteWithApp({
+ *   method: 'GET',
+ *   path: '/app-info',
+ *   middleware: [appValidator],
+ *   handler: ({ app }) => {
+ *     return { appId: app.id, appName: app.name }
+ *   }
+ * })
+ * ```
  */
 export const defineRouteWithApp = withContext<{ app: AppInfo }>()
+
+/**
+ * 可选认证 + app 上下文的路由定义器
+ * 
+ * 用于需要 app 验证但用户认证可选的路由（C端公开接口）
+ * 需配合 [auth（可选）, appValidator] 中间件使用
+ * 
+ * @example
+ * ```typescript
+ * import { auth, appValidator, defineOptionalAuthRouteWithApp } from '@vafast/auth-middleware'
+ * 
+ * // 方式1：使用可选认证中间件（推荐）
+ * defineOptionalAuthRouteWithApp({
+ *   method: 'POST',
+ *   path: '/notices',
+ *   middleware: [auth, appValidator], // auth 失败不会报错，只是 userInfo 为 undefined
+ *   handler: ({ userInfo, app }) => {
+ *     if (userInfo) {
+ *       // 已登录用户：返回个性化数据
+ *     } else {
+ *       // 未登录用户：返回基础数据
+ *     }
+ *     return { appId: app.id }
+ *   }
+ * })
+ * 
+ * // 方式2：只使用 appValidator（如果完全不需要认证）
+ * defineOptionalAuthRouteWithApp({
+ *   method: 'GET',
+ *   path: '/public-info',
+ *   middleware: [appValidator],
+ *   handler: ({ app }) => {
+ *     return { appId: app.id, appName: app.name }
+ *   }
+ * })
+ * ```
+ */
+export const defineOptionalAuthRouteWithApp = withContext<{ userInfo?: UserInfo; app: AppInfo }>()
+
 
 /**
  * 带完整认证上下文的路由定义器
@@ -739,20 +798,44 @@ export const defineFullAuthRoute = withContext<{
   app: AppInfo
 }>()
 
-// ============ 语义化别名导出 ============
+// ============ 语义化函数导出 ============
 // 更清晰的命名，推荐使用
 
-/** JWT + API Key 混合认证（推荐） */
-export { authenticate as authJwtAndApiKey }
+/**
+ * JWT + API Key 混合认证（推荐）
+ * 
+ * 语义化别名，内部调用 authenticate
+ */
+export function authJwtAndApiKey(options?: AuthMiddlewareOptions) {
+  return authenticate(options)
+}
 
-/** 仅 JWT 认证 */
-export { authenticateJwt as authJwt }
+/**
+ * 仅 JWT 认证
+ * 
+ * 语义化别名，内部调用 authenticateJwt
+ */
+export function authJwt(options?: AuthMiddlewareOptions) {
+  return authenticateJwt(options)
+}
 
-/** 仅 API Key 认证 */
-export { authenticateApiKey as authApiKey }
+/**
+ * 仅 API Key 认证
+ * 
+ * 语义化别名，内部调用 authenticateApiKey
+ */
+export function authApiKey(options?: AuthMiddlewareOptions) {
+  return authenticateApiKey(options)
+}
 
-/** 验证 App ID */
-export { validateApp as validateAppId }
+/**
+ * 验证 App ID
+ * 
+ * 语义化别名，内部调用 validateApp
+ */
+export function validateAppId(config?: AuthMiddlewareOptions, options?: ValidateAppOptions) {
+  return validateApp(config, options)
+}
 
 // ============ 预配置中间件（懒加载单例） ============
 // 最简洁用法：middleware: [auth, appValidator]
@@ -871,10 +954,11 @@ export const appValidator = defineMiddleware<ValidateAppContext>(async (req, nex
   }
 
   const result = await client.verifyApp(appId)
-  if (!result.data?.valid) {
-    return Response.json({ code: 400, message: '无效的 app-id' }, { status: 400 })
+  if (!result.data?.valid || !result.data.app) {
+    return Response.json({ code: 400, message: result.data?.message || '无效的 app-id' }, { status: 400 })
   }
 
-  return next({ appId })
+  // 统一返回完整的 app 对象
+  return next({ app: result.data.app })
 })
 

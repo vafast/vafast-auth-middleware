@@ -12,6 +12,7 @@ import {
   defineApiKeyRoute,
   defineAuthRouteWithApp,
   defineRouteWithApp,
+  defineOptionalAuthRouteWithApp,
   defineFullAuthRoute,
   type AuthClientConfig,
 } from './index'
@@ -96,6 +97,7 @@ describe('Route Definers', () => {
     expect(defineApiKeyRoute).toBeDefined()
     expect(defineAuthRouteWithApp).toBeDefined()
     expect(defineRouteWithApp).toBeDefined()
+    expect(defineOptionalAuthRouteWithApp).toBeDefined()
     expect(defineFullAuthRoute).toBeDefined()
   })
 })

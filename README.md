@@ -173,6 +173,7 @@ const {
   defineApiKeyRoute,       // { userInfo?, apiKey? }
   defineAuthRouteWithApp,  // { userInfo, app }
   defineRouteWithApp,      // { app }
+  defineOptionalAuthRouteWithApp,  // { userInfo?, app }
   defineFullAuthRoute,     // { userInfo, apiKey?, app }
 } = createAuth()
 ```
@@ -285,6 +286,7 @@ import {
   defineApiKeyRoute,         // { userInfo?: UserInfo, apiKey?: ApiKeyInfo }
   defineAuthRouteWithApp,    // { userInfo: UserInfo, app: AppInfo }
   defineRouteWithApp,        // { app: AppInfo }
+  defineOptionalAuthRouteWithApp,  // { userInfo?: UserInfo, app: AppInfo }
   defineFullAuthRoute,       // { userInfo: UserInfo, apiKey?: ApiKeyInfo, app: AppInfo }
 } from '@vafast/auth-middleware'
 
@@ -303,6 +305,32 @@ defineAuthRouteWithApp({
   method: 'POST',
   path: '/update',
   middleware: [auth, appValidator],  // 认证 + App 验证
+  handler: ({ userInfo, app }) => {
+    // userInfo 和 app 都有完整类型
+    return { userId: userInfo.id, appId: app.id }
+  },
+})
+
+// 可选认证 + App 验证（C端公开接口）
+defineOptionalAuthRouteWithApp({
+  method: 'POST',
+  path: '/notices',
+  middleware: [auth, appValidator],  // auth 失败不会报错，只是 userInfo 为 undefined
+  handler: ({ userInfo, app }) => {
+    if (userInfo) {
+      // 已登录用户：返回个性化数据
+      return { notices: [], personalized: true }
+    } else {
+      // 未登录用户：返回基础数据
+      return { notices: [], personalized: false }
+    }
+  },
+})
+
+defineRouteWithApp({
+  method: 'GET',
+  path: '/app-info',
+  middleware: [appValidator],  // 只需要 App 验证
   handler: ({ userInfo, app }) => {
     // userInfo 和 app 都有类型
     return { userId: userInfo.id, appId: app.id }
