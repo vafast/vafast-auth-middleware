@@ -183,20 +183,22 @@ export function createAuthClient(config?: AuthClientConfig) {
   return {
     /**
      * 验证 JWT Token
+     * 注意：使用独立的 /verifyJwt 路由，不需要 app-id header
      */
     async verifyJwt(token: string, appId?: string): Promise<ApiResult<UserInfo>> {
-      return callAuthApi<UserInfo>('/authRestfulApi/verify/jwt', { token, appId })
+      return callAuthApi<UserInfo>('/authRestfulApi/verifyJwt', { token, appId })
     },
 
     /**
      * 验证 API Key
+     * 注意：使用独立的 /verifyApiKey 路由，不需要 app-id header
      */
     async verifyApiKey(
       apiKeyId: string,
       secretKey: string
     ): Promise<ApiResult<{ userInfo: UserInfo; apiKey: ApiKeyInfo }>> {
       return callAuthApi<{ userInfo: UserInfo; apiKey: ApiKeyInfo }>(
-        '/authRestfulApi/verify/api-key',
+        '/authRestfulApi/verifyApiKey',
         { apiKeyId, secretKey }
       )
     },
