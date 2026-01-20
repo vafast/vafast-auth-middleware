@@ -5,7 +5,7 @@ Vafast 认证中间件 - 完整的 JWT/API Key 验证解决方案。
 ## 特点
 
 - **开箱即用**：内置 auth-server 客户端，无需额外依赖
-- **软认证模式**：验证失败不阻塞请求，让后续 guard 决定是否拒绝
+- **硬认证模式**：验证失败直接返回 401，需要认证就加中间件，不需要就不加
 - **支持多种认证**：JWT、API Key、混合认证
 - **语义化导出**：函数名清晰表达功能
 - **环境变量配置**：一行代码完成配置
@@ -32,19 +32,28 @@ AUTH_SERVICE_API_KEY_SECRET=sk_xxx
 import { createAuth } from '@vafast/auth-middleware'
 
 // 一行代码创建所有认证工具
-const { auth, appValidator, requireAuth } = createAuth()
+const { auth, appValidator } = createAuth()
 
 // 在路由中使用
 export const routes = defineRoutes({
   prefix: '/api',
-  middleware: [auth, appValidator],
   routes: [
+    // 需要认证的接口 - 加 auth 中间件
     defineRoute({
       method: 'GET',
       path: '/profile',
-      middleware: [requireAuth],
+      middleware: [auth, appValidator],
       handler: async ({ userInfo }) => {
         return Response.json({ user: userInfo })
+      },
+    }),
+
+    // 公开接口 - 不加中间件
+    defineRoute({
+      method: 'GET',
+      path: '/public',
+      handler: async () => {
+        return Response.json({ message: 'Hello' })
       },
     }),
   ],
@@ -72,12 +81,35 @@ const appValidator = validateApp({
 })
 ```
 
-### 方式三：共享客户端实例
+### 方式三：零配置（推荐）
+
+设置好环境变量后，直接导入预配置的中间件：
+
+```typescript
+import { auth, appValidator } from '@vafast/auth-middleware'
+
+// 直接使用，无需括号
+export const routes = defineRoutes([
+  defineRoute({
+    method: 'GET',
+    path: '/profile',
+    middleware: [auth, appValidator],
+    handler: ({ userInfo }) => ({ user: userInfo }),
+  }),
+])
+```
+
+> 预配置中间件使用懒加载单例，首次请求时初始化，自动读取环境变量。
+
+### 方式四：共享客户端实例
 
 ```typescript
 import { createAuthClient, authenticateJwt, authenticateApiKey } from '@vafast/auth-middleware'
 
-// 创建共享客户端
+// 方式1：无参数，自动读取环境变量
+const client = createAuthClient()
+
+// 方式2：手动配置
 const client = createAuthClient({
   baseUrl: 'http://localhost:9003',
   apiKeyId: 'ak_xxx',
@@ -85,8 +117,8 @@ const client = createAuthClient({
 })
 
 // 多个中间件共享同一客户端
-const jwtAuth = authenticateJwt({ client })
-const apiKeyAuth = authenticateApiKey({ client })
+const jwtAuth = authenticateJwt(client)
+const apiKeyAuth = authenticateApiKey(client)
 
 // 也可以直接调用客户端方法
 const users = await client.getUsersBatch(['user1', 'user2'])
@@ -103,19 +135,20 @@ const users = await client.getUsersBatch(['user1', 'user2'])
 | `authenticateApiKey` | `authApiKey` | 仅 API Key 认证 |
 | `validateApp` | `validateAppId` | App ID 验证 |
 
-### 使用语义化别名（推荐）
+### 预配置中间件一览
+
+| 中间件 | 功能 |
+|--------|------|
+| `auth` | JWT + API Key 混合认证 |
+| `jwtAuth` | 仅 JWT 认证 |
+| `apiKeyAuth` | 仅 API Key 认证 |
+| `appValidator` | 验证 app-id |
 
 ```typescript
-import { 
-  authJwtAndApiKey,  // 混合认证
-  authJwt,           // JWT 认证
-  authApiKey,        // API Key 认证
-  validateAppId,     // App ID 验证
-} from '@vafast/auth-middleware'
+import { auth, jwtAuth, apiKeyAuth, appValidator } from '@vafast/auth-middleware'
 
-// 配置后使用
-const auth = authJwtAndApiKey({ client: config })
-const appValidator = validateAppId({ client: config })
+// 直接使用，无需括号
+middleware: [auth, appValidator]
 ```
 
 ## API 参考
@@ -178,14 +211,16 @@ JWT 认证中间件。
 ```typescript
 import { authenticateJwt, authJwt } from '@vafast/auth-middleware'
 
-// 两者等价
-const jwtAuth = authenticateJwt({ client: config })
-const jwtAuth = authJwt({ client: config })  // 语义化别名
-```
+// 方式1：无参数，自动读取环境变量
+const jwtAuth = authenticateJwt()
 
-**选项：**
-- `client`: `AuthClientConfig | AuthClient` - 客户端配置或实例
-- `debug?`: `boolean` - 调试模式，默认 false
+// 方式2：手动配置
+const jwtAuth = authenticateJwt({ baseUrl: 'http://localhost:9003' })
+
+// 方式3：传入已创建的客户端
+const client = createAuthClient()
+const jwtAuth = authenticateJwt(client)
+```
 
 ### authenticateApiKey / authApiKey
 
@@ -194,9 +229,8 @@ API Key 认证中间件。
 ```typescript
 import { authenticateApiKey, authApiKey } from '@vafast/auth-middleware'
 
-// 两者等价
-const apiKeyAuth = authenticateApiKey({ client: config })
-const apiKeyAuth = authApiKey({ client: config })  // 语义化别名
+// 无参数调用
+const apiKeyAuth = authenticateApiKey()
 ```
 
 ### authenticate / authJwtAndApiKey
@@ -206,9 +240,9 @@ const apiKeyAuth = authApiKey({ client: config })  // 语义化别名
 ```typescript
 import { authenticate, authJwtAndApiKey } from '@vafast/auth-middleware'
 
-// 两者等价
-const auth = authenticate({ client: config })
-const auth = authJwtAndApiKey({ client: config })  // 语义化别名（推荐）
+// 无参数调用（推荐）
+const auth = authenticate()
+const auth = authJwtAndApiKey()  // 语义化别名
 ```
 
 ### validateApp / validateAppId
@@ -218,23 +252,28 @@ App ID 验证中间件。
 ```typescript
 import { validateApp, validateAppId } from '@vafast/auth-middleware'
 
-// 两者等价
-const appValidator = validateApp({ client: config, required: true })
-const appValidator = validateAppId({ client: config })  // 语义化别名
+// 无参数调用
+const appValidator = validateApp()
+
+// 可选 app-id
+const appValidatorOptional = validateApp(undefined, { required: false })
 ```
 
 **选项：**
-- `client`: `AuthClientConfig | AuthClient` - 客户端配置或实例
-- `required?`: `boolean` - 是否必需，默认 true
-- `debug?`: `boolean` - 调试模式，默认 false
+- `config?`: `AuthClientConfig | AuthClient` - 客户端配置或实例，不传则从环境变量读取
+- `options.required?`: `boolean` - 是否必需，默认 true
+- `options.verify?`: `boolean` - 是否网络验证，默认 true
 
 ### Guards
 
-```typescript
-import { requireAuth, requireApiKey } from '@vafast/auth-middleware'
+硬认证模式下，Guards 主要用于特殊场景：
 
-// requireAuth - 检查 userInfo 是否存在
-// requireApiKey - 检查 apiKey 是否存在
+```typescript
+import { requireUser, requireApp, requireApiKey } from '@vafast/auth-middleware'
+
+// requireUser - 检查 userInfo 是否存在（硬认证下通常不需要）
+// requireApp - 检查 app/appId 是否存在（配合 validateAppId 使用）
+// requireApiKey - 检查 apiKey 是否存在（用于要求必须是 API Key 认证，而非 JWT）
 ```
 
 ### 路由定义器（类型推断辅助）
@@ -253,7 +292,7 @@ import {
 defineAuthRoute({
   method: 'GET',
   path: '/profile',
-  middleware: [auth, requireAuth],
+  middleware: [auth],  // 硬认证，userInfo 一定存在
   handler: ({ userInfo }) => {
     // userInfo 自动有正确的类型推断
     return { id: userInfo.id, email: userInfo.email }
@@ -263,7 +302,7 @@ defineAuthRoute({
 defineAuthRouteWithApp({
   method: 'POST',
   path: '/update',
-  middleware: [auth, appValidator, requireAuth],
+  middleware: [auth, appValidator],  // 认证 + App 验证
   handler: ({ userInfo, app }) => {
     // userInfo 和 app 都有类型
     return { userId: userInfo.id, appId: app.id }
@@ -274,22 +313,24 @@ defineAuthRouteWithApp({
 ## 认证流程
 
 ```
-请求 → authenticate 中间件
+请求 → auth 中间件
      ↓
      提取 Authorization header
+     ↓
+     无 header → 返回 401
      ↓
      识别认证类型（JWT 或 API Key）
      ↓
      调用 auth-server 验证
      ↓
-     成功：注入 userInfo/apiKey 到上下文
-     失败：继续执行（软认证）
+     验证失败 → 返回 401
      ↓
-     requireAuth/requireApiKey guard
+     验证成功 → 注入 userInfo/apiKey 到上下文
      ↓
-     无权限：返回 401
-     有权限：继续到 handler
+     继续到 handler
 ```
+
+**硬认证设计**：加了 `auth` 中间件就必须认证成功，不需要认证的路由不加中间件即可。
 
 ## 上下文类型
 
@@ -325,25 +366,32 @@ export const {
   client: authClient,
   auth,
   appValidator,
-  requireAuth,
-  requireApiKey,
 } = createAuth()
 
 // src/routes/users.ts
 import { defineRoutes, defineRoute } from 'vafast'
-import { auth, appValidator, requireAuth, authClient } from '../middleware'
+import { auth, appValidator, authClient } from '../middleware'
 
 export const userRoutes = defineRoutes({
   prefix: '/users',
-  middleware: [auth, appValidator],
   routes: [
-    // 需要登录
+    // 需要认证 - 加 auth 中间件
     defineRoute({
       method: 'GET',
       path: '/me',
-      middleware: [requireAuth],
+      middleware: [auth, appValidator],
       handler: async ({ userInfo }) => {
+        // userInfo 一定存在（硬认证）
         return Response.json({ user: userInfo })
+      },
+    }),
+
+    // 公开接口 - 不加中间件
+    defineRoute({
+      method: 'GET',
+      path: '/count',
+      handler: async () => {
+        return Response.json({ count: 100 })
       },
     }),
   ],
@@ -357,7 +405,6 @@ export const userRoutes = defineRoutes({
 import { 
   authJwtAndApiKey, 
   validateAppId, 
-  requireUser, 
   requireApp 
 } from '@vafast/auth-middleware'
 
@@ -368,11 +415,11 @@ const config = {
 }
 
 // 导出配置好的中间件
-export const auth = authJwtAndApiKey(config)       // JWT + API Key 混合认证
+export const auth = authJwtAndApiKey(config)       // JWT + API Key 混合认证（硬认证）
 export const appValidator = validateAppId(config)  // App ID 验证
 
-// Guards 直接 re-export
-export { requireUser, requireApp } from '@vafast/auth-middleware'
+// Guards（仅在需要时使用）
+export { requireApp } from '@vafast/auth-middleware'
 ```
 
 ## License

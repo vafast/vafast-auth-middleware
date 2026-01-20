@@ -5,12 +5,12 @@
  * 
  * 特点：
  * - 开箱即用：内置 auth-server 客户端，无需额外依赖
- * - 软认证模式：验证失败也继续执行（让后续 guard 处理权限）
+ * - 硬认证模式：验证失败直接返回 401，需要认证就加中间件，不需要就不加
  * - 支持 JWT 和 API Key 两种认证方式
  * - 可选依赖注入：高级用户可自定义验证函数
  */
 
-import { defineMiddleware, withContext } from 'vafast'
+import { defineMiddleware, withContext, err } from 'vafast'
 
 // ============ 通用类型定义 ============
 
@@ -57,14 +57,24 @@ export interface ApiResult<T> {
 
 /** Auth 客户端配置 */
 export interface AuthClientConfig {
-  /** auth-server 基础 URL，如 http://localhost:9003 */
-  baseUrl: string
-  /** 服务间通信使用的 API Key ID（可选） */
+  /** auth-server 基础 URL，如 http://localhost:9003。不传则读取 AUTH_API_BASE_URL 环境变量 */
+  baseUrl?: string
+  /** 服务间通信使用的 API Key ID。不传则读取 AUTH_SERVICE_API_KEY_ID 环境变量 */
   apiKeyId?: string
-  /** 服务间通信使用的 API Key Secret（可选） */
+  /** 服务间通信使用的 API Key Secret。不传则读取 AUTH_SERVICE_API_KEY_SECRET 环境变量 */
   apiKeySecret?: string
   /** 请求超时时间（毫秒），默认 5000 */
   timeout?: number
+}
+
+/** 从环境变量获取配置值 */
+function getEnvConfig() {
+  return {
+    baseUrl: process.env.AUTH_API_BASE_URL,
+    apiKeyId: process.env.AUTH_SERVICE_API_KEY_ID,
+    apiKeySecret: process.env.AUTH_SERVICE_API_KEY_SECRET,
+    timeout: process.env.AUTH_API_TIMEOUT ? Number(process.env.AUTH_API_TIMEOUT) : undefined,
+  }
 }
 
 // ============ 内置 Auth Client ============
@@ -73,9 +83,29 @@ export interface AuthClientConfig {
  * 创建 Auth 客户端
  * 
  * 内置的 auth-server 客户端，使用原生 fetch 实现
+ * 
+ * @param config 可选配置，不传则从环境变量读取
+ * 
+ * @example
+ * ```typescript
+ * // 方式1：无参数，自动读取环境变量
+ * const client = createAuthClient()
+ * 
+ * // 方式2：手动配置
+ * const client = createAuthClient({ baseUrl: 'http://localhost:9003' })
+ * ```
  */
-export function createAuthClient(config: AuthClientConfig) {
-  const { baseUrl, apiKeyId, apiKeySecret, timeout = 5000 } = config
+export function createAuthClient(config?: AuthClientConfig) {
+  const env = getEnvConfig()
+  const baseUrl = config?.baseUrl || env.baseUrl
+  
+  if (!baseUrl) {
+    throw new Error('缺少 baseUrl 配置。请传入 baseUrl 参数或设置 AUTH_API_BASE_URL 环境变量')
+  }
+  
+  const apiKeyId = config?.apiKeyId ?? env.apiKeyId ?? ''
+  const apiKeySecret = config?.apiKeySecret ?? env.apiKeySecret ?? ''
+  const timeout = config?.timeout ?? env.timeout ?? 5000
 
   // 构建请求头
   function buildHeaders(userId?: string): Record<string, string> {
@@ -232,8 +262,8 @@ export type AuthClient = ReturnType<typeof createAuthClient>
 
 // ============ 中间件选项 ============
 
-/** 认证中间件选项：直接传配置或已创建的客户端 */
-export type AuthMiddlewareOptions = AuthClientConfig | AuthClient
+/** 认证中间件选项：直接传配置、已创建的客户端，或不传（从环境变量读取） */
+export type AuthMiddlewareOptions = AuthClientConfig | AuthClient | undefined
 
 /** App 验证中间件选项 */
 export interface ValidateAppOptions {
@@ -246,12 +276,15 @@ export interface ValidateAppOptions {
 // ============ 辅助函数 ============
 
 /** 判断是否为 AuthClient 实例 */
-function isAuthClient(obj: AuthMiddlewareOptions): obj is AuthClient {
-  return 'verifyJwt' in obj && typeof obj.verifyJwt === 'function'
+function isAuthClient(obj: unknown): obj is AuthClient {
+  return obj !== null && obj !== undefined && 'verifyJwt' in (obj as object) && typeof (obj as AuthClient).verifyJwt === 'function'
 }
 
 /** 获取或创建 AuthClient 实例 */
-function getClient(options: AuthMiddlewareOptions): AuthClient {
+function getClient(options?: AuthMiddlewareOptions): AuthClient {
+  if (!options) {
+    return createAuthClient()
+  }
   if (isAuthClient(options)) {
     return options
   }
@@ -261,72 +294,71 @@ function getClient(options: AuthMiddlewareOptions): AuthClient {
 // ============ JWT 认证中间件 ============
 
 /**
- * JWT 认证中间件
+ * JWT 认证中间件（硬认证）
  * 
  * 从请求头提取 JWT，调用 auth-server 验证，将用户信息注入上下文
+ * 验证失败直接返回 401
+ * 
+ * @param options 可选配置，不传则从环境变量读取
  * 
  * @example
  * ```ts
- * import { authenticateJwt } from '@vafast/auth-middleware'
+ * // 方式1：无参数，自动读取环境变量
+ * const jwtAuth = authenticateJwt()
  * 
- * const jwtAuth = authenticateJwt({
- *   baseUrl: 'http://localhost:9003',
- *   apiKeyId: 'ak_xxx',
- *   apiKeySecret: 'sk_xxx',
- * })
+ * // 方式2：手动配置
+ * const jwtAuth = authenticateJwt({ baseUrl: 'http://localhost:9003' })
  * ```
  */
-export function authenticateJwt(options: AuthMiddlewareOptions) {
+export function authenticateJwt(options?: AuthMiddlewareOptions) {
   const client = getClient(options)
 
-  return defineMiddleware<{ userInfo?: UserInfo }>(async (req, next) => {
+  return defineMiddleware<{ userInfo: UserInfo }>(async (req, next) => {
     const authorization = req.headers.get('authorization')
     const appId = req.headers.get('app-id')
 
-    // 无 authorization，继续执行（软认证）
-    if (!authorization) {
-      return next()
-    }
-
-    // 强制要求 Bearer 前缀，否则跳过
-    if (!authorization.startsWith('Bearer ')) {
-      return next()
+    // 无 authorization，返回 401
+    if (!authorization || !authorization.startsWith('Bearer ')) {
+      throw err('未提供认证信息', 401)
     }
 
     const jwtToken = authorization.slice(7)
     if (!jwtToken) {
-      return next()
+      throw err('未提供认证信息', 401)
     }
 
-    // 如果是 API Key 格式（包含冒号），跳过 JWT 验证
+    // 如果是 API Key 格式（包含冒号），不是 JWT
     if (jwtToken.includes(':')) {
-      return next()
+      throw err('无效的 JWT Token', 401)
     }
 
     // 调用 auth-server API 验证 JWT
     const result = await client.verifyJwt(jwtToken, appId || undefined)
 
-    if (result.data) {
-      // 检查用户状态
-      if (result.data.status === 'disabled' || result.data.status === 'deleted') {
-        return next()
-      }
-
-      const userInfo: UserInfo = {
-        id: result.data.id,
-        appId: result.data.appId || appId || '',
-        email: result.data.email || '',
-        phone: result.data.phone || '',
-        avatar: result.data.avatar || '',
-        status: result.data.status || 'normal',
-        roleId: result.data.roleId || '',
-        nickname: result.data.nickname,
-        verified: result.data.verified,
-      }
-      return next({ userInfo })
+    if (!result.data) {
+      throw err(result.error?.message || '认证失败', 401)
     }
 
-    return next()
+    // 检查用户状态
+    if (result.data.status === 'disabled') {
+      throw err('账号已被禁用', 401)
+    }
+    if (result.data.status === 'deleted') {
+      throw err('账号已被删除', 401)
+    }
+
+    const userInfo: UserInfo = {
+      id: result.data.id,
+      appId: result.data.appId || appId || '',
+      email: result.data.email || '',
+      phone: result.data.phone || '',
+      avatar: result.data.avatar || '',
+      status: result.data.status || 'normal',
+      roleId: result.data.roleId || '',
+      nickname: result.data.nickname,
+      verified: result.data.verified,
+    }
+    return next({ userInfo })
   })
 }
 
@@ -339,106 +371,128 @@ export interface ApiKeyContext {
 }
 
 /**
- * API Key 认证中间件
+ * API Key 认证中间件（硬认证）
  * 
  * 从请求头提取 API Key，调用 auth-server 验证，将用户信息和 API Key 信息注入上下文
+ * 验证失败直接返回 401
+ * 
+ * @param options 可选配置，不传则从环境变量读取
  * 
  * @example
  * ```ts
+ * // 方式1：无参数，自动读取环境变量
+ * const apiKeyAuth = authenticateApiKey()
+ * 
+ * // 方式2：手动配置
  * const apiKeyAuth = authenticateApiKey({ baseUrl: 'http://localhost:9003' })
  * ```
  */
-export function authenticateApiKey(options: AuthMiddlewareOptions) {
+export function authenticateApiKey(options?: AuthMiddlewareOptions) {
   const client = getClient(options)
 
   return defineMiddleware<ApiKeyContext>(async (req, next) => {
     const authorization = req.headers.get('authorization')
 
-    // 无 authorization，继续执行（软认证）
-    if (!authorization) {
-      return next()
-    }
-
-    // 强制要求 Bearer 前缀
-    if (!authorization.startsWith('Bearer ')) {
-      return next()
+    // 无 authorization，返回 401
+    if (!authorization || !authorization.startsWith('Bearer ')) {
+      throw err('未提供认证信息', 401)
     }
 
     const token = authorization.slice(7)
     if (!token) {
-      return next()
+      throw err('未提供认证信息', 401)
     }
 
     // API Key 格式：apiKeyId:secretKey
     if (!token.includes(':')) {
-      return next()
+      throw err('无效的 API Key 格式', 401)
     }
 
     const [apiKeyId, secretKey] = token.split(':')
     if (!apiKeyId || !secretKey) {
-      return next()
+      throw err('无效的 API Key 格式', 401)
     }
 
     // 调用 auth-server API 验证 API Key
     const result = await client.verifyApiKey(apiKeyId, secretKey)
 
-    if (result.data) {
-      return next({
-        userInfo: result.data.userInfo,
-        apiKey: result.data.apiKey,
-      })
+    if (!result.data) {
+      throw err(result.error?.message || 'API Key 验证失败', 401)
     }
 
-    return next()
+    return next({
+      userInfo: result.data.userInfo,
+      apiKey: result.data.apiKey,
+    })
   })
 }
 
 // ============ 混合认证中间件 ============
 
 /**
- * 混合认证中间件
+ * 混合认证中间件（硬认证）
  * 
  * 同时支持 JWT 和 API Key 认证，自动识别认证方式
+ * 验证失败直接返回 401
+ * 
+ * @param options 可选配置，不传则从环境变量读取
  * 
  * @example
  * ```ts
- * const auth = authenticate({ baseUrl: 'http://localhost:9003', apiKeyId: 'ak_xxx', apiKeySecret: 'sk_xxx' })
+ * // 方式1：无参数，自动读取环境变量
+ * const auth = authenticate()
+ * 
+ * // 方式2：手动配置
+ * const auth = authenticate({ baseUrl: 'http://localhost:9003' })
  * ```
  */
-export function authenticate(options: AuthMiddlewareOptions) {
+export function authenticate(options?: AuthMiddlewareOptions) {
   const client = getClient(options)
 
   return defineMiddleware<ApiKeyContext>(async (req, next) => {
     const authorization = req.headers.get('authorization')
     const appId = req.headers.get('app-id')
 
+    // 无 authorization，返回 401
     if (!authorization || !authorization.startsWith('Bearer ')) {
-      return next()
+      throw err('未提供认证信息', 401)
     }
 
     const token = authorization.slice(7)
     if (!token) {
-      return next()
+      throw err('未提供认证信息', 401)
     }
 
     if (token.includes(':')) {
       // API Key
       const [apiKeyId, secretKey] = token.split(':')
-      if (apiKeyId && secretKey) {
-        const result = await client.verifyApiKey(apiKeyId, secretKey)
-        if (result.data) {
-          return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
-        }
+      if (!apiKeyId || !secretKey) {
+        throw err('无效的 API Key 格式', 401)
       }
+
+      const result = await client.verifyApiKey(apiKeyId, secretKey)
+      if (!result.data) {
+        throw err(result.error?.message || 'API Key 验证失败', 401)
+      }
+
+      return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
     } else {
       // JWT
       const result = await client.verifyJwt(token, appId || undefined)
-      if (result.data && result.data.status !== 'disabled' && result.data.status !== 'deleted') {
-        return next({ userInfo: result.data })
-      }
-    }
 
-    return next()
+      if (!result.data) {
+        throw err(result.error?.message || '认证失败', 401)
+      }
+
+      if (result.data.status === 'disabled') {
+        throw err('账号已被禁用', 401)
+      }
+      if (result.data.status === 'deleted') {
+        throw err('账号已被删除', 401)
+      }
+
+      return next({ userInfo: result.data })
+    }
   })
 }
 
@@ -455,19 +509,25 @@ export interface ValidateAppContext {
  * 
  * 验证请求头中的 app-id 是否有效
  * 
+ * @param config 可选配置，不传则从环境变量读取
+ * @param options 验证选项
+ * 
  * @example
  * ```ts
- * // 完整验证（调用 auth-server）
+ * // 方式1：无参数，自动读取环境变量
+ * const appValidator = validateApp()
+ * 
+ * // 方式2：手动配置
  * const appValidator = validateApp({ baseUrl: 'http://localhost:9003' })
  * 
  * // 可选 app-id
- * const appValidatorOptional = validateApp({ baseUrl: '...' }, { required: false })
+ * const appValidatorOptional = validateApp(undefined, { required: false })
  * 
  * // 只检查 header 存在，不网络验证（轻量级）
- * const appIdChecker = validateApp({ baseUrl: '...' }, { verify: false })
+ * const appIdChecker = validateApp(undefined, { verify: false })
  * ```
  */
-export function validateApp(config: AuthMiddlewareOptions, options?: ValidateAppOptions) {
+export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAppOptions) {
   const client = getClient(config)
   const required = options?.required ?? true
   const verify = options?.verify ?? true
@@ -693,4 +753,128 @@ export { authenticateApiKey as authApiKey }
 
 /** 验证 App ID */
 export { validateApp as validateAppId }
+
+// ============ 预配置中间件（懒加载单例） ============
+// 最简洁用法：middleware: [auth, appValidator]
+
+let _sharedClient: AuthClient | null = null
+
+/** 获取共享客户端（懒加载） */
+function getSharedClient(): AuthClient {
+  if (!_sharedClient) {
+    _sharedClient = createAuthClient()
+  }
+  return _sharedClient
+}
+
+/** 预配置的混合认证中间件（懒加载） */
+export const auth = defineMiddleware<ApiKeyContext>(async (req, next) => {
+  const client = getSharedClient()
+  const authorization = req.headers.get('authorization')
+  const appId = req.headers.get('app-id')
+
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    throw err('未提供认证信息', 401)
+  }
+
+  const token = authorization.slice(7)
+  if (!token) {
+    throw err('未提供认证信息', 401)
+  }
+
+  // API Key 格式: ak_xxx:sk_xxx
+  if (token.includes(':')) {
+    const [keyId, keySecret] = token.split(':')
+    if (!keyId || !keySecret) {
+      throw err('无效的 API Key 格式', 401)
+    }
+    const result = await client.verifyApiKey(keyId, keySecret)
+    if (!result.data) {
+      throw err(result.error?.message || 'API Key 验证失败', 401)
+    }
+    return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
+  }
+
+  // JWT
+  const result = await client.verifyJwt(token, appId || undefined)
+  if (!result.data) {
+    throw err(result.error?.message || '认证失败', 401)
+  }
+  if (result.data.status === 'disabled') {
+    throw err('账号已被禁用', 401)
+  }
+  if (result.data.status === 'deleted') {
+    throw err('账号已被删除', 401)
+  }
+  return next({ userInfo: result.data })
+})
+
+/** 预配置的 JWT 认证中间件（懒加载） */
+export const jwtAuth = defineMiddleware<{ userInfo: UserInfo }>(async (req, next) => {
+  const client = getSharedClient()
+  const authorization = req.headers.get('authorization')
+  const appId = req.headers.get('app-id')
+
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    throw err('未提供认证信息', 401)
+  }
+  const jwtToken = authorization.slice(7)
+  if (!jwtToken) {
+    throw err('未提供认证信息', 401)
+  }
+  if (jwtToken.includes(':')) {
+    throw err('无效的 JWT Token', 401)
+  }
+  const result = await client.verifyJwt(jwtToken, appId || undefined)
+  if (!result.data) {
+    throw err(result.error?.message || '认证失败', 401)
+  }
+  if (result.data.status === 'disabled') {
+    throw err('账号已被禁用', 401)
+  }
+  if (result.data.status === 'deleted') {
+    throw err('账号已被删除', 401)
+  }
+  return next({ userInfo: result.data })
+})
+
+/** 预配置的 API Key 认证中间件（懒加载） */
+export const apiKeyAuth = defineMiddleware<ApiKeyContext>(async (req, next) => {
+  const client = getSharedClient()
+  const authorization = req.headers.get('authorization')
+
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    throw err('未提供认证信息', 401)
+  }
+  const token = authorization.slice(7)
+  if (!token || !token.includes(':')) {
+    throw err('无效的 API Key 格式', 401)
+  }
+  const [keyId, keySecret] = token.split(':')
+  if (!keyId || !keySecret) {
+    throw err('无效的 API Key 格式', 401)
+  }
+  const result = await client.verifyApiKey(keyId, keySecret)
+  if (!result.data) {
+    throw err(result.error?.message || 'API Key 验证失败', 401)
+  }
+  return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
+})
+
+/** 预配置的 App 验证中间件（懒加载） */
+export const appValidator = defineMiddleware<ValidateAppContext>(async (req, next) => {
+  const client = getSharedClient()
+  const appId = req.headers.get('app-id')
+
+  if (!appId) {
+    return Response.json({ code: 400, message: '缺少必需的请求头: app-id' }, { status: 400 })
+  }
+
+  const result = await client.verifyApp(appId)
+  if (!result.data?.valid) {
+    return Response.json({ code: 400, message: '无效的 app-id' }, { status: 400 })
+  }
+
+  return next({ appId })
+})
 
