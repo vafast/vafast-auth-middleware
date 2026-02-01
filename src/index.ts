@@ -186,7 +186,7 @@ export function createAuthClient(config?: AuthClientConfig) {
      * 注意：使用独立的 /verifyJwt 路由，不需要 app-id header
      */
     async verifyJwt(token: string, appId?: string): Promise<ApiResult<UserInfo>> {
-      return callAuthApi<UserInfo>('/authRestfulApi/verifyJwt', { token, appId })
+      return callAuthApi<UserInfo>('/verifyJwt', { token, appId })
     },
 
     /**
@@ -198,7 +198,7 @@ export function createAuthClient(config?: AuthClientConfig) {
       secretKey: string
     ): Promise<ApiResult<{ userInfo: UserInfo; apiKey: ApiKeyInfo }>> {
       return callAuthApi<{ userInfo: UserInfo; apiKey: ApiKeyInfo }>(
-        '/authRestfulApi/verifyApiKey',
+        '/verifyApiKey',
         { apiKeyId, secretKey }
       )
     },
@@ -210,7 +210,7 @@ export function createAuthClient(config?: AuthClientConfig) {
       appId: string
     ): Promise<ApiResult<{ valid: boolean; app?: AppInfo; message?: string }>> {
       return callAuthApi<{ valid: boolean; app?: AppInfo; message?: string }>(
-        '/authRestfulApi/apps/verify',
+        '/apps/verify',
         { appId }
       )
     },
@@ -223,7 +223,7 @@ export function createAuthClient(config?: AuthClientConfig) {
       options?: { userId?: string }
     ): Promise<ApiResult<UserInfo[]>> {
       return callAuthApi<UserInfo[]>(
-        '/authRestfulApi/users/batch',
+        '/users/batch',
         { userIds },
         options
       )
@@ -237,7 +237,7 @@ export function createAuthClient(config?: AuthClientConfig) {
       options?: { userId?: string }
     ): Promise<ApiResult<{ list: UserInfo[]; total: number }>> {
       return callAuthApi<{ list: UserInfo[]; total: number }>(
-        '/authRestfulApi/users/find',
+        '/users/find',
         params,
         options
       )
@@ -251,7 +251,7 @@ export function createAuthClient(config?: AuthClientConfig) {
       options?: { userId?: string }
     ): Promise<ApiResult<{ total: number; new: number; active: number }>> {
       return callAuthApi<{ total: number; new: number; active: number }>(
-        '/authRestfulApi/users/statistics',
+        '/users/statistics',
         params,
         options
       )
