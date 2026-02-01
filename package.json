@@ -1,6 +1,6 @@
 {
   "name": "@vafast/auth-middleware",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Authentication middleware for Vafast - Generic JWT/API Key verification with dependency injection",
   "type": "module",
   "main": "./dist/index.mjs",
