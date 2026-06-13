@@ -47,6 +47,11 @@ export interface AppInfo {
   [key: string]: unknown
 }
 
+/** JWT 验证结果，可携带已验证的 app 摘要 */
+export interface VerifiedUserInfo extends UserInfo {
+  app?: AppInfo
+}
+
 /** API 响应结果 */
 export interface ApiResult<T> {
   data?: T
@@ -217,8 +222,8 @@ export function createAuthClient(config?: AuthClientConfig) {
      * 验证 JWT Token
      * 注意：使用独立的 /verifyJwt 路由，不需要 app-id header
      */
-    async verifyJwt(token: string, appId?: string): Promise<ApiResult<UserInfo>> {
-      return callAuthApi<UserInfo>('/verifyJwt', { token, appId })
+    async verifyJwt(token: string, appId?: string): Promise<ApiResult<VerifiedUserInfo>> {
+      return callAuthApi<VerifiedUserInfo>('/verifyJwt', { token, appId })
     },
 
     /**
@@ -325,6 +330,17 @@ function getClient(options?: AuthMiddlewareOptions): AuthClient {
   return createAuthClient(options)
 }
 
+function getValidatedAppFromLocals(req: Request, appId: string): AppInfo | undefined {
+  const ctx = getLocals<{ app?: AppInfo; userInfo?: VerifiedUserInfo }>(req)
+  if (ctx?.app?.id === appId) {
+    return ctx.app
+  }
+  if (ctx?.userInfo?.app?.id === appId) {
+    return ctx.userInfo.app
+  }
+  return undefined
+}
+
 // ============ JWT 认证中间件 ============
 
 /**
@@ -381,7 +397,7 @@ export function authenticateJwt(options?: AuthMiddlewareOptions) {
       throw err('账号已被删除', 401)
     }
 
-    const userInfo: UserInfo = {
+    const userInfo: VerifiedUserInfo = {
       id: result.data.id,
       appId: result.data.appId || appId || '',
       email: result.data.email || '',
@@ -391,6 +407,9 @@ export function authenticateJwt(options?: AuthMiddlewareOptions) {
       roleId: result.data.roleId || '',
       nickname: result.data.nickname,
       verified: result.data.verified,
+    }
+    if (result.data.app) {
+      userInfo.app = result.data.app
     }
     return next({ userInfo })
   })
@@ -537,6 +556,22 @@ export interface ValidateAppContext {
   app: AppInfo
 }
 
+/** 认证并验证 App 的上下文 */
+export interface AuthWithAppContext {
+  userInfo: UserInfo
+  apiKey?: ApiKeyInfo
+  app: AppInfo
+}
+
+function ensureActiveUser(user: UserInfo) {
+  if (user.status === 'disabled') {
+    throw err('账号已被禁用', 401)
+  }
+  if (user.status === 'deleted') {
+    throw err('账号已被删除', 401)
+  }
+}
+
 /**
  * App 验证中间件
  * 
@@ -587,6 +622,11 @@ export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAp
       })
     }
 
+    const verifiedApp = getValidatedAppFromLocals(req, appId)
+    if (verifiedApp) {
+      return next({ app: verifiedApp })
+    }
+
     // 调用 auth-server 验证
     const result = await client.verifyApp(appId)
 
@@ -604,6 +644,70 @@ export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAp
 
     // 统一返回完整的 app 对象
     return next({ app: result.data.app })
+  })
+}
+
+/**
+ * 用户认证 + App 验证中间件
+ *
+ * 适合后台业务接口：要求用户已认证、app-id 有效，并在一次 JWT 验证中注入 userInfo 和 app。
+ */
+export function authenticateWithApp(options?: AuthMiddlewareOptions) {
+  const client = getClient(options)
+
+  return defineMiddleware<AuthWithAppContext>(async (req, next) => {
+    const authorization = req.headers.get('authorization')
+    const appId = req.headers.get('app-id')
+
+    if (!appId) {
+      return Response.json({ code: 400, message: '缺少必需的请求头: app-id' }, { status: 400 })
+    }
+    if (!authorization || !authorization.startsWith('Bearer ')) {
+      throw err('未提供认证信息', 401)
+    }
+
+    const token = authorization.slice(7)
+    if (!token) {
+      throw err('未提供认证信息', 401)
+    }
+
+    if (token.includes(':')) {
+      const [apiKeyId, secretKey] = token.split(':')
+      if (!apiKeyId || !secretKey) {
+        throw err('无效的 API Key 格式', 401)
+      }
+
+      const apiKeyResult = await client.verifyApiKey(apiKeyId, secretKey)
+      if (!apiKeyResult.data) {
+        throwAuthFailure(apiKeyResult.error, 'API Key 验证失败', 401)
+      }
+
+      const appResult = await client.verifyApp(appId)
+      if (!appResult.data?.valid || !appResult.data.app) {
+        const status = normalizeAuthFailureStatus(appResult.error?.code, 400)
+        return Response.json({
+          code: status,
+          message: appResult.error?.message || appResult.data?.message || '无效的 app-id',
+        }, { status })
+      }
+
+      return next({
+        userInfo: apiKeyResult.data.userInfo,
+        apiKey: apiKeyResult.data.apiKey,
+        app: appResult.data.app,
+      })
+    }
+
+    const jwtResult = await client.verifyJwt(token, appId)
+    if (!jwtResult.data) {
+      throwAuthFailure(jwtResult.error, '认证失败', 401)
+    }
+    ensureActiveUser(jwtResult.data)
+    if (!jwtResult.data.app) {
+      throw err('无效的 app-id', 400)
+    }
+
+    return next({ userInfo: jwtResult.data, app: jwtResult.data.app })
   })
 }
 
@@ -921,6 +1025,15 @@ export function validateAppId(config?: AuthMiddlewareOptions, options?: Validate
   return validateApp(config, options)
 }
 
+/**
+ * 认证用户并验证 App
+ *
+ * 语义化别名，内部调用 authenticateWithApp
+ */
+export function authApp(options?: AuthMiddlewareOptions) {
+  return authenticateWithApp(options)
+}
+
 // ============ 预配置中间件（懒加载单例） ============
 // 最简洁用法：middleware: [auth, appValidator]
 
@@ -1037,6 +1150,11 @@ export const appValidator = defineMiddleware<ValidateAppContext>(async (req, nex
     return Response.json({ code: 400, message: '缺少必需的请求头: app-id' }, { status: 400 })
   }
 
+  const verifiedApp = getValidatedAppFromLocals(req, appId)
+  if (verifiedApp) {
+    return next({ app: verifiedApp })
+  }
+
   const result = await client.verifyApp(appId)
   if (!result.data?.valid || !result.data.app) {
     const status = normalizeAuthFailureStatus(result.error?.code, 400)
@@ -1048,5 +1166,62 @@ export const appValidator = defineMiddleware<ValidateAppContext>(async (req, nex
 
   // 统一返回完整的 app 对象
   return next({ app: result.data.app })
+})
+
+/** 预配置的用户认证 + App 验证中间件（懒加载） */
+export const authWithApp = defineMiddleware<AuthWithAppContext>(async (req, next) => {
+  const client = getSharedClient()
+  const authorization = req.headers.get('authorization')
+  const appId = req.headers.get('app-id')
+
+  if (!appId) {
+    return Response.json({ code: 400, message: '缺少必需的请求头: app-id' }, { status: 400 })
+  }
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    throw err('未提供认证信息', 401)
+  }
+
+  const token = authorization.slice(7)
+  if (!token) {
+    throw err('未提供认证信息', 401)
+  }
+
+  if (token.includes(':')) {
+    const [keyId, keySecret] = token.split(':')
+    if (!keyId || !keySecret) {
+      throw err('无效的 API Key 格式', 401)
+    }
+
+    const apiKeyResult = await client.verifyApiKey(keyId, keySecret)
+    if (!apiKeyResult.data) {
+      throwAuthFailure(apiKeyResult.error, 'API Key 验证失败', 401)
+    }
+
+    const appResult = await client.verifyApp(appId)
+    if (!appResult.data?.valid || !appResult.data.app) {
+      const status = normalizeAuthFailureStatus(appResult.error?.code, 400)
+      return Response.json({
+        code: status,
+        message: appResult.error?.message || appResult.data?.message || '无效的 app-id',
+      }, { status })
+    }
+
+    return next({
+      userInfo: apiKeyResult.data.userInfo,
+      apiKey: apiKeyResult.data.apiKey,
+      app: appResult.data.app,
+    })
+  }
+
+  const jwtResult = await client.verifyJwt(token, appId)
+  if (!jwtResult.data) {
+    throwAuthFailure(jwtResult.error, '认证失败', 401)
+  }
+  ensureActiveUser(jwtResult.data)
+  if (!jwtResult.data.app) {
+    throw err('无效的 app-id', 400)
+  }
+
+  return next({ userInfo: jwtResult.data, app: jwtResult.data.app })
 })
 
