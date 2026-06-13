@@ -53,6 +53,38 @@ export interface ApiResult<T> {
   error?: { code: number; message: string }
 }
 
+const AUTH_API_TIMEOUT_CODE = 504
+const AUTH_API_UNAVAILABLE_CODE = 503
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function normalizeAuthApiError(error: unknown): { code: number; message: string } {
+  if (isAbortError(error)) {
+    return {
+      code: AUTH_API_TIMEOUT_CODE,
+      message: '认证服务响应超时，请稍后重试',
+    }
+  }
+  return {
+    code: AUTH_API_UNAVAILABLE_CODE,
+    message: '认证服务暂时不可用，请稍后重试',
+  }
+}
+
+function normalizeAuthFailureStatus(code: number | undefined, fallbackStatus: number) {
+  if (code && code >= 400 && code <= 599) {
+    return code
+  }
+  return fallbackStatus
+}
+
+function throwAuthFailure(errorInfo: ApiResult<unknown>['error'], fallbackMessage: string, fallbackStatus: number): never {
+  const status = normalizeAuthFailureStatus(errorInfo?.code, fallbackStatus)
+  throw err(errorInfo?.message || fallbackMessage, status)
+}
+
 // ============ Auth Client 配置 ============
 
 /** Auth 客户端配置 */
@@ -173,9 +205,9 @@ export function createAuthClient(config?: AuthClientConfig) {
         },
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : '网络错误'
+      const normalized = normalizeAuthApiError(error)
       return {
-        error: { code: -1, message },
+        error: normalized,
       }
     }
   }
@@ -338,7 +370,7 @@ export function authenticateJwt(options?: AuthMiddlewareOptions) {
     const result = await client.verifyJwt(jwtToken, appId || undefined)
 
     if (!result.data) {
-      throw err(result.error?.message || '认证失败', 401)
+      throwAuthFailure(result.error, '认证失败', 401)
     }
 
     // 检查用户状态
@@ -419,7 +451,7 @@ export function authenticateApiKey(options?: AuthMiddlewareOptions) {
     const result = await client.verifyApiKey(apiKeyId, secretKey)
 
     if (!result.data) {
-      throw err(result.error?.message || 'API Key 验证失败', 401)
+      throwAuthFailure(result.error, 'API Key 验证失败', 401)
     }
 
     return next({
@@ -474,7 +506,7 @@ export function authenticate(options?: AuthMiddlewareOptions) {
 
       const result = await client.verifyApiKey(apiKeyId, secretKey)
       if (!result.data) {
-        throw err(result.error?.message || 'API Key 验证失败', 401)
+        throwAuthFailure(result.error, 'API Key 验证失败', 401)
       }
 
       return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
@@ -483,7 +515,7 @@ export function authenticate(options?: AuthMiddlewareOptions) {
       const result = await client.verifyJwt(token, appId || undefined)
 
       if (!result.data) {
-        throw err(result.error?.message || '认证失败', 401)
+        throwAuthFailure(result.error, '认证失败', 401)
       }
 
       if (result.data.status === 'disabled') {
@@ -560,7 +592,11 @@ export function validateApp(config?: AuthMiddlewareOptions, options?: ValidateAp
 
     if (!result.data?.valid || !result.data.app) {
       if (required) {
-        return Response.json({ code: 400, message: result.data?.message || '无效的 app-id' }, { status: 400 })
+        const status = normalizeAuthFailureStatus(result.error?.code, 400)
+        return Response.json({
+          code: status,
+          message: result.error?.message || result.data?.message || '无效的 app-id',
+        }, { status })
       }
       // required: false 时也不注入无效的 app
       return next()
@@ -921,7 +957,7 @@ export const auth = defineMiddleware<ApiKeyContext>(async (req, next) => {
     }
     const result = await client.verifyApiKey(keyId, keySecret)
     if (!result.data) {
-      throw err(result.error?.message || 'API Key 验证失败', 401)
+      throwAuthFailure(result.error, 'API Key 验证失败', 401)
     }
     return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
   }
@@ -929,7 +965,7 @@ export const auth = defineMiddleware<ApiKeyContext>(async (req, next) => {
   // JWT
   const result = await client.verifyJwt(token, appId || undefined)
   if (!result.data) {
-    throw err(result.error?.message || '认证失败', 401)
+    throwAuthFailure(result.error, '认证失败', 401)
   }
   if (result.data.status === 'disabled') {
     throw err('账号已被禁用', 401)
@@ -958,7 +994,7 @@ export const jwtAuth = defineMiddleware<{ userInfo: UserInfo }>(async (req, next
   }
   const result = await client.verifyJwt(jwtToken, appId || undefined)
   if (!result.data) {
-    throw err(result.error?.message || '认证失败', 401)
+    throwAuthFailure(result.error, '认证失败', 401)
   }
   if (result.data.status === 'disabled') {
     throw err('账号已被禁用', 401)
@@ -987,7 +1023,7 @@ export const apiKeyAuth = defineMiddleware<ApiKeyContext>(async (req, next) => {
   }
   const result = await client.verifyApiKey(keyId, keySecret)
   if (!result.data) {
-    throw err(result.error?.message || 'API Key 验证失败', 401)
+    throwAuthFailure(result.error, 'API Key 验证失败', 401)
   }
   return next({ userInfo: result.data.userInfo, apiKey: result.data.apiKey })
 })
@@ -1003,7 +1039,11 @@ export const appValidator = defineMiddleware<ValidateAppContext>(async (req, nex
 
   const result = await client.verifyApp(appId)
   if (!result.data?.valid || !result.data.app) {
-    return Response.json({ code: 400, message: result.data?.message || '无效的 app-id' }, { status: 400 })
+    const status = normalizeAuthFailureStatus(result.error?.code, 400)
+    return Response.json({
+      code: status,
+      message: result.error?.message || result.data?.message || '无效的 app-id',
+    }, { status })
   }
 
   // 统一返回完整的 app 对象

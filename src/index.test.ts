@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   createAuthClient,
   authenticateJwt,
@@ -21,9 +21,19 @@ import {
 vi.mock('vafast', () => ({
   defineMiddleware: vi.fn((fn) => fn),
   withContext: vi.fn(() => vi.fn()),
+  err: vi.fn((message: string, status = 500, code = status) =>
+    Object.assign(new Error(message), { status, code }),
+  ),
 }))
 
 describe('createAuthClient', () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
   it('应该创建包含所有方法的客户端', () => {
     const config: AuthClientConfig = {
       baseUrl: 'http://localhost:9003',
@@ -39,6 +49,31 @@ describe('createAuthClient', () => {
     expect(typeof client.searchUsers).toBe('function')
     expect(typeof client.getUsersStats).toBe('function')
   })
+
+  it('应该将 auth-server 超时归类为 504', async () => {
+    const abortError = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
+    globalThis.fetch = vi.fn().mockRejectedValue(abortError)
+
+    const client = createAuthClient({ baseUrl: 'http://localhost:9003', timeout: 1 })
+    const result = await client.verifyJwt('token')
+
+    expect(result.error).toEqual({
+      code: 504,
+      message: '认证服务响应超时，请稍后重试',
+    })
+  })
+
+  it('应该将 auth-server 网络错误归类为 503', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
+
+    const client = createAuthClient({ baseUrl: 'http://localhost:9003' })
+    const result = await client.verifyJwt('token')
+
+    expect(result.error).toEqual({
+      code: 503,
+      message: '认证服务暂时不可用，请稍后重试',
+    })
+  })
 })
 
 describe('authenticateJwt', () => {
@@ -51,6 +86,28 @@ describe('authenticateJwt', () => {
     const client = createAuthClient({ baseUrl: 'http://localhost:9003' })
     const middleware = authenticateJwt(client)
     expect(typeof middleware).toBe('function')
+  })
+
+  it('应该透传 auth-server 超时状态，而不是返回 401', async () => {
+    const client = {
+      verifyJwt: vi.fn().mockResolvedValue({
+        error: { code: 504, message: '认证服务响应超时，请稍后重试' },
+      }),
+      verifyApiKey: vi.fn(),
+      verifyApp: vi.fn(),
+      getUsersBatch: vi.fn(),
+      searchUsers: vi.fn(),
+      getUsersStats: vi.fn(),
+    }
+    const middleware = authenticateJwt(client)
+    const req = new Request('http://localhost/test', {
+      headers: { authorization: 'Bearer jwt-token' },
+    })
+
+    await expect(middleware(req, vi.fn())).rejects.toMatchObject({
+      message: '认证服务响应超时，请稍后重试',
+      status: 504,
+    })
   })
 })
 
@@ -77,6 +134,31 @@ describe('validateApp', () => {
   it('应该接受 required 选项', () => {
     const middleware = validateApp({ baseUrl: 'http://localhost:9003' }, { required: false })
     expect(typeof middleware).toBe('function')
+  })
+
+  it('应该在 auth-server 超时时返回 504，而不是 400', async () => {
+    const client = {
+      verifyJwt: vi.fn(),
+      verifyApiKey: vi.fn(),
+      verifyApp: vi.fn().mockResolvedValue({
+        error: { code: 504, message: '认证服务响应超时，请稍后重试' },
+      }),
+      getUsersBatch: vi.fn(),
+      searchUsers: vi.fn(),
+      getUsersStats: vi.fn(),
+    }
+    const middleware = validateApp(client)
+    const req = new Request('http://localhost/test', {
+      headers: { 'app-id': 'app_1' },
+    })
+    const response = await middleware(req, vi.fn())
+    const data = await response.json()
+
+    expect(response.status).toBe(504)
+    expect(data).toEqual({
+      code: 504,
+      message: '认证服务响应超时，请稍后重试',
+    })
   })
 })
 
