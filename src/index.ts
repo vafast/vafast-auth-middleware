@@ -25,6 +25,16 @@ export interface UserInfo {
   roleId?: string
   nickname?: string
   verified?: boolean
+  /** 组织成员所属组织。组织成员身份直接归属 organization。 */
+  organizationId?: string
+  /** organization_member 表示组织成员，customer_user 表示客户应用终端用户。 */
+  accountType?: string
+  /** 组织成员跨 app 访问时为 true，用于区分后台账号和目标 app 终端用户身份 */
+  isOrgMemberAccess?: boolean
+  /** 本次请求 app-id 指向的目标 app，跨 app 访问时与用户原始 appId 不同 */
+  targetAppId?: string
+  /** 本次访问模式：direct 为当前 app 用户直接访问，org_member_delegate 为组织成员代理访问。 */
+  accessMode?: 'direct' | 'org_member_delegate'
   [key: string]: unknown
 }
 
@@ -44,6 +54,8 @@ export interface AppInfo {
   id: string
   name: string
   status: string
+  /** auth-server 维护的 app 结构化扩展，如 organizationId */
+  extensions?: Record<string, unknown>
   [key: string]: unknown
 }
 
