@@ -1,15 +1,37 @@
 # @vafast/auth-middleware
 
-Vafast 认证中间件 - 完整的 JWT/API Key 验证解决方案。
+对接 auth-server 的 JWT / API Key **硬认证**、`app-id` 校验、守卫与带类型的路由定义器。
 
-## 特点
+硬认证：挂了就必须成功；失败直接 401/400。需要认证就挂，不需要就不挂。
 
-- **开箱即用**：内置 auth-server 客户端，无需额外依赖
-- **硬认证模式**：验证失败直接返回 401，需要认证就加中间件，不需要就不加
-- **支持多种认证**：JWT、API Key、混合认证
-- **语义化导出**：函数名清晰表达功能
-- **环境变量配置**：一行代码完成配置
-- **零外部依赖**：仅依赖 `vafast` 框架和原生 `fetch`
+完整文档：[Auth Middleware](https://vafast.dev/middleware/auth-middleware)
+
+## 先搞清几个概念
+
+### Bearer JWT vs API Key
+
+都使用 `Authorization: Bearer <凭证>`，用凭证是否含 **`:`** 区分：
+
+| 方式 | 凭证 | 行为 |
+|------|------|------|
+| JWT | 不含 `:` | `/verifyJwt`；可附带请求头 `app-id` |
+| API Key | `id:secret` | `/verifyApiKey`；注入 `userInfo` + `apiKey` |
+
+服务间调用 auth-server 用的 `AUTH_SERVICE_API_KEY_*` 与用户侧 Bearer API Key 是两套凭证。
+
+### 失败码：401 vs 400
+
+| 场景 | 状态码 |
+|------|--------|
+| 缺少/非法 Authorization、JWT/API Key 失败、账号禁用/删除 | **401** |
+| 缺少/无效 `app-id` | **400** |
+| 守卫无 `userInfo` / `apiKey` | **401** |
+| 守卫无 `app` | **400** |
+| auth-server 超时 / 不可用 | **504** / **503** 风格 |
+
+### `app-id` 多租户
+
+`appValidator` / `authWithApp` 要求 `app-id` 请求头并校验后注入 `app`。
 
 ## 安装
 
@@ -19,495 +41,142 @@ npm install @vafast/auth-middleware
 
 ## 快速开始
 
-### 方式一：使用环境变量（推荐）
-
 ```bash
-# .env
 AUTH_API_BASE_URL=http://localhost:9003
 AUTH_SERVICE_API_KEY_ID=ak_xxx
 AUTH_SERVICE_API_KEY_SECRET=sk_xxx
+# 可选：AUTH_API_TIMEOUT=5000
 ```
 
 ```typescript
-import { createAuth } from '@vafast/auth-middleware'
+import { authWithApp, requireUser, defineAuthRouteWithApp } from '@vafast/auth-middleware'
+import { defineRoute, defineRoutes } from 'vafast'
 
-// 一行代码创建所有认证工具
-const { auth, appValidator } = createAuth()
-
-// 在路由中使用
-export const routes = defineRoutes({
-  prefix: '/api',
-  routes: [
-    // 需要认证的接口 - 加 auth 中间件
-    defineRoute({
-      method: 'GET',
-      path: '/profile',
-      middleware: [auth, appValidator],
-      handler: async ({ userInfo }) => {
-        return Response.json({ user: userInfo })
-      },
-    }),
-
-    // 公开接口 - 不加中间件
-    defineRoute({
-      method: 'GET',
-      path: '/public',
-      handler: async () => {
-        return Response.json({ message: 'Hello' })
-      },
-    }),
-  ],
-})
-```
-
-### 方式二：手动配置
-
-```typescript
-import { authenticateJwt, validateApp, requireUserAndApp } from '@vafast/auth-middleware'
-
-const jwtAuth = authenticateJwt({
-  client: {
-    baseUrl: 'http://localhost:9003',
-    apiKeyId: 'ak_xxx',
-    apiKeySecret: 'sk_xxx',
-  },
-})
-
-const appValidator = validateApp({
-  client: {
-    baseUrl: 'http://localhost:9003',
-  },
-  required: true,
-})
-```
-
-### 方式三：零配置（推荐）
-
-设置好环境变量后，直接导入预配置的中间件：
-
-```typescript
-import { auth, appValidator } from '@vafast/auth-middleware'
-
-// 直接使用，无需括号
 export const routes = defineRoutes([
   defineRoute({
-    method: 'GET',
-    path: '/profile',
-    middleware: [auth, appValidator],
-    handler: ({ userInfo }) => ({ user: userInfo }),
+    path: '/api',
+    middleware: [authWithApp],
+    children: [
+      defineAuthRouteWithApp({
+        method: 'GET',
+        path: '/profile',
+        middleware: [requireUser],
+        handler: ({ userInfo, app }) => ({
+          id: userInfo.id,
+          appId: app.id,
+        }),
+      }),
+    ],
   }),
 ])
 ```
 
-> 预配置中间件使用懒加载单例，首次请求时初始化，自动读取环境变量。
+## 用法
 
-### 方式四：共享客户端实例
+### 环境变量
 
-```typescript
-import { createAuthClient, authenticateJwt, authenticateApiKey } from '@vafast/auth-middleware'
+| 变量 | 必需 | 说明 |
+|------|------|------|
+| `AUTH_API_BASE_URL` | 是* | auth-server 地址 |
+| `AUTH_SERVICE_API_KEY_ID` | 否 | 服务间 API Key ID |
+| `AUTH_SERVICE_API_KEY_SECRET` | 否 | 服务间 API Key Secret |
+| `AUTH_API_TIMEOUT` | 否 | 超时毫秒，默认 `5000` |
 
-// 方式1：无参数，自动读取环境变量
-const client = createAuthClient()
+\* 缺少 `baseUrl`（参数与环境变量都没有）时 `createAuthClient` 会抛错。
 
-// 方式2：手动配置
-const client = createAuthClient({
-  baseUrl: 'http://localhost:9003',
-  apiKeyId: 'ak_xxx',
-  apiKeySecret: 'sk_xxx',
-})
+### 请求头
 
-// 多个中间件共享同一客户端
-const jwtAuth = authenticateJwt(client)
-const apiKeyAuth = authenticateApiKey(client)
-
-// 也可以直接调用客户端方法
-const users = await client.getUsersBatch(['user1', 'user2'])
-```
-
-## 导出一览
-
-### 中间件工厂函数
-
-| 函数名 | 语义化别名 | 说明 |
-|--------|-----------|------|
-| `authenticate` | `authJwtAndApiKey` | JWT + API Key 混合认证 |
-| `authenticateJwt` | `authJwt` | 仅 JWT 认证 |
-| `authenticateApiKey` | `authApiKey` | 仅 API Key 认证 |
-| `validateApp` | `validateAppId` | App ID 验证 |
-
-### 预配置中间件一览
-
-| 中间件 | 功能 |
+| Header | 说明 |
 |--------|------|
-| `auth` | JWT + API Key 混合认证 |
-| `jwtAuth` | 仅 JWT 认证 |
-| `apiKeyAuth` | 仅 API Key 认证 |
-| `appValidator` | 验证 app-id |
-
-```typescript
-import { auth, jwtAuth, apiKeyAuth, appValidator } from '@vafast/auth-middleware'
-
-// 直接使用，无需括号
-middleware: [auth, appValidator]
-```
-
-### 类型导出
-
-```typescript
-import type {
-  UserInfo,              // 用户信息
-  ApiKeyInfo,            // API Key 信息
-  AppInfo,               // App 信息
-  RouteExtensions,       // 路由扩展类型（内置 webhook 支持）
-  WebhookConfigOptions,  // Webhook 配置选项
-} from '@vafast/auth-middleware'
-```
-
-**RouteExtensions 类型**：
-
-```typescript
-interface RouteExtensions {
-  /** Webhook 配置 */
-  readonly webhook?: boolean | {
-    eventKey?: string
-    include?: string[]
-    exclude?: string[]
-  }
-  /** 允许其他自定义扩展 */
-  readonly [key: string]: unknown
-}
-```
-
-## API 参考
-
-### createAuth(configOverrides?)
-
-从环境变量创建完整的认证工具集。
-
-```typescript
-const {
-  client,            // AuthClient 实例
-  jwtAuth,           // JWT 认证中间件
-  apiKeyAuth,        // API Key 认证中间件
-  auth,              // 混合认证中间件
-  appValidator,      // App 验证（required: true）
-  appValidatorOptional, // App 验证（required: false）
-  requireUserAndApp,       // 需要登录 + App Guard
-  requireApiKey,     // 需要 API Key Guard
-  // 路由定义器（类型推断辅助）
-  defineAuthRoute,         // { userInfo: UserInfo }
-  defineOptionalAuthRoute, // { userInfo?: UserInfo }
-  defineApiKeyRoute,       // { userInfo?, apiKey? }
-  defineAuthRouteWithApp,  // { userInfo, app }
-  defineRouteWithApp,      // { app }
-  defineOptionalAuthRouteWithApp,  // { userInfo?, app }
-  defineFullAuthRoute,     // { userInfo, apiKey?, app }
-} = createAuth()
-```
-
-### createAuthClient(config)
-
-创建 auth-server 客户端。
-
-```typescript
-interface AuthClientConfig {
-  baseUrl: string          // auth-server 地址
-  apiKeyId?: string        // 服务间通信 API Key ID
-  apiKeySecret?: string    // 服务间通信 API Key Secret
-  timeout?: number         // 请求超时（毫秒），默认 5000
-}
-
-const client = createAuthClient({
-  baseUrl: 'http://localhost:9003',
-  apiKeyId: 'ak_xxx',
-  apiKeySecret: 'sk_xxx',
-})
-
-// 客户端方法
-await client.verifyJwt(token, appId?)
-await client.verifyApiKey(apiKeyId, secretKey)
-await client.verifyApp(appId)
-await client.getUsersBatch(userIds)
-await client.searchUsers({ keyword, appId, current, pageSize })
-await client.getUsersStats({ appId, startTime, endTime })
-```
-
-### authenticateJwt / authJwt
-
-JWT 认证中间件。
-
-```typescript
-import { authenticateJwt, authJwt } from '@vafast/auth-middleware'
-
-// 方式1：无参数，自动读取环境变量
-const jwtAuth = authenticateJwt()
-
-// 方式2：手动配置
-const jwtAuth = authenticateJwt({ baseUrl: 'http://localhost:9003' })
-
-// 方式3：传入已创建的客户端
-const client = createAuthClient()
-const jwtAuth = authenticateJwt(client)
-```
-
-### authenticateApiKey / authApiKey
-
-API Key 认证中间件。
-
-```typescript
-import { authenticateApiKey, authApiKey } from '@vafast/auth-middleware'
-
-// 无参数调用
-const apiKeyAuth = authenticateApiKey()
-```
-
-### authenticate / authJwtAndApiKey
-
-混合认证中间件，自动识别 JWT 或 API Key。
-
-```typescript
-import { authenticate, authJwtAndApiKey } from '@vafast/auth-middleware'
-
-// 无参数调用（推荐）
-const auth = authenticate()
-const auth = authJwtAndApiKey()  // 语义化别名
-```
-
-### validateApp / validateAppId
-
-App ID 验证中间件。
-
-```typescript
-import { validateApp, validateAppId } from '@vafast/auth-middleware'
-
-// 无参数调用
-const appValidator = validateApp()
-
-// 可选 app-id
-const appValidatorOptional = validateApp(undefined, { required: false })
-```
-
-**选项：**
-- `config?`: `AuthClientConfig | AuthClient` - 客户端配置或实例，不传则从环境变量读取
-- `options.required?`: `boolean` - 是否必需，默认 true
-- `options.verify?`: `boolean` - 是否网络验证，默认 true
-
-### Guards
-
-硬认证模式下，Guards 主要用于特殊场景：
-
-```typescript
-import { requireUser, requireApp, requireApiKey } from '@vafast/auth-middleware'
-
-// requireUser - 检查 userInfo 是否存在（硬认证下通常不需要）
-// requireApp - 检查 app/appId 是否存在（配合 validateAppId 使用）
-// requireApiKey - 检查 apiKey 是否存在（用于要求必须是 API Key 认证，而非 JWT）
-```
-
-### 路由定义器（类型推断辅助）
-
-```typescript
-import {
-  defineAuthRoute,           // { userInfo: UserInfo }
-  defineOptionalAuthRoute,   // { userInfo?: UserInfo }
-  defineApiKeyRoute,         // { userInfo?: UserInfo, apiKey?: ApiKeyInfo }
-  defineAuthRouteWithApp,    // { userInfo: UserInfo, app: AppInfo }
-  defineRouteWithApp,        // { app: AppInfo }
-  defineOptionalAuthRouteWithApp,  // { userInfo?: UserInfo, app: AppInfo }
-  defineFullAuthRoute,       // { userInfo: UserInfo, apiKey?: ApiKeyInfo, app: AppInfo }
-} from '@vafast/auth-middleware'
-
-// 使用示例
-defineAuthRoute({
-  method: 'GET',
-  path: '/profile',
-  middleware: [auth],  // 硬认证，userInfo 一定存在
-  handler: ({ userInfo }) => {
-    // userInfo 自动有正确的类型推断
-    return { id: userInfo.id, email: userInfo.email }
-  },
-})
-
-defineAuthRouteWithApp({
-  method: 'POST',
-  path: '/update',
-  middleware: [auth, appValidator],  // 认证 + App 验证
-  handler: ({ userInfo, app }) => {
-    // userInfo 和 app 都有完整类型
-    return { userId: userInfo.id, appId: app.id }
-  },
-})
-
-// 内置 webhook 支持
-defineAuthRouteWithApp({
-  method: 'POST',
-  path: '/create',
-  webhook: true,  // ✅ 有类型提示：boolean | { eventKey?, exclude?, include? }
-  middleware: [auth, appValidator],
-  handler: ({ userInfo, app }) => { ... },
-})
-
-// webhook 详细配置
-defineAuthRouteWithApp({
-  method: 'POST',
-  path: '/update',
-  webhook: {
-    eventKey: 'user.updated',
-    exclude: ['password', 'secret'],  // 排除敏感字段
-  },
-  middleware: [auth, appValidator],
-  handler: ({ userInfo, app }) => { ... },
-})
-
-// 支持自定义扩展字段（索引签名）
-defineAuthRouteWithApp({
-  method: 'POST',
-  path: '/admin',
-  webhook: true,
-  permission: 'admin',  // ✅ 自定义扩展
-  rateLimit: 100,       // ✅ 任意扩展
-  middleware: [auth, appValidator],
-  handler: ({ userInfo, app }) => { ... },
-})
-
-// 可选认证 + App 验证（C端公开接口）
-defineOptionalAuthRouteWithApp({
-  method: 'POST',
-  path: '/notices',
-  middleware: [auth, appValidator],  // auth 失败不会报错，只是 userInfo 为 undefined
-  handler: ({ userInfo, app }) => {
-    if (userInfo) {
-      // 已登录用户：返回个性化数据
-      return { notices: [], personalized: true }
-    } else {
-      // 未登录用户：返回基础数据
-      return { notices: [], personalized: false }
-    }
-  },
-})
-
-defineRouteWithApp({
-  method: 'GET',
-  path: '/app-info',
-  middleware: [appValidator],  // 只需要 App 验证
-  handler: ({ userInfo, app }) => {
-    // userInfo 和 app 都有类型
-    return { userId: userInfo.id, appId: app.id }
-  },
-})
-```
-
-## 认证流程
-
-```
-请求 → auth 中间件
-     ↓
-     提取 Authorization header
-     ↓
-     无 header → 返回 401
-     ↓
-     识别认证类型（JWT 或 API Key）
-     ↓
-     调用 auth-server 验证
-     ↓
-     验证失败 → 返回 401
-     ↓
-     验证成功 → 注入 userInfo/apiKey 到上下文
-     ↓
-     继续到 handler
-```
-
-**硬认证设计**：加了 `auth` 中间件就必须认证成功，不需要认证的路由不加中间件即可。
-
-## 上下文类型
-
-```typescript
-// JWT 认证后
-interface { userInfo?: UserInfo }
-
-// API Key 认证后
-interface { userInfo?: UserInfo; apiKey?: ApiKeyInfo }
-
-// App 验证后
-interface { app?: AppInfo }
-```
-
-## 环境变量
-
-| 变量名 | 必需 | 说明 |
-|--------|------|------|
-| AUTH_API_BASE_URL | 是 | auth-server 地址 |
-| AUTH_SERVICE_API_KEY_ID | 否 | 服务间通信 API Key ID |
-| AUTH_SERVICE_API_KEY_SECRET | 否 | 服务间通信 API Key Secret |
-| AUTH_API_TIMEOUT | 否 | 请求超时（毫秒） |
-
-## 完整示例
-
-### 方式一：使用 createAuth（推荐）
-
-```typescript
-// src/middleware/index.ts
-import { createAuth } from '@vafast/auth-middleware'
-
-export const {
-  client: authClient,
-  auth,
-  appValidator,
-} = createAuth()
-
-// src/routes/users.ts
-import { defineRoutes, defineRoute } from 'vafast'
-import { auth, appValidator, authClient } from '../middleware'
-
-export const userRoutes = defineRoutes({
-  prefix: '/users',
-  routes: [
-    // 需要认证 - 加 auth 中间件
-    defineRoute({
-      method: 'GET',
-      path: '/me',
-      middleware: [auth, appValidator],
-      handler: async ({ userInfo }) => {
-        // userInfo 一定存在（硬认证）
-        return Response.json({ user: userInfo })
-      },
-    }),
-
-    // 公开接口 - 不加中间件
-    defineRoute({
-      method: 'GET',
-      path: '/count',
-      handler: async () => {
-        return Response.json({ count: 100 })
-      },
-    }),
-  ],
-})
-```
-
-### 方式二：使用语义化别名
-
-```typescript
-// src/middleware/index.ts
-import { 
-  authJwtAndApiKey, 
-  validateAppId, 
-  requireApp 
-} from '@vafast/auth-middleware'
-
-const config = {
-  baseUrl: process.env.AUTH_API_BASE_URL,
-  apiKeyId: process.env.AUTH_SERVICE_API_KEY_ID,
-  apiKeySecret: process.env.AUTH_SERVICE_API_KEY_SECRET,
-}
-
-// 导出配置好的中间件
-export const auth = authJwtAndApiKey(config)       // JWT + API Key 混合认证（硬认证）
-export const appValidator = validateAppId(config)  // App ID 验证
-
-// Guards（仅在需要时使用）
-export { requireApp } from '@vafast/auth-middleware'
-```
+| `Authorization: Bearer <jwt>` | JWT |
+| `Authorization: Bearer <apiKeyId>:<secret>` | API Key |
+| `app-id: <appId>` | 多租户 / `appValidator` / `authWithApp` |
+
+### 预配置中间件（懒加载）
+
+| 导出 | 说明 | 注入 |
+|------|------|------|
+| `auth` | JWT + API Key | `userInfo`（+ `apiKey`） |
+| `jwtAuth` | 仅 JWT（含 `:` 非法） | `userInfo` |
+| `apiKeyAuth` | 仅 API Key | `userInfo` + `apiKey` |
+| `appValidator` | 必需 `app-id` | `app` |
+| `authWithApp` | 用户 + app | `userInfo` + `app`（+ `apiKey`） |
+
+### 工厂
+
+| 函数 | 别名 |
+|------|------|
+| `authenticate` | `authJwtAndApiKey` |
+| `authenticateJwt` | `authJwt` |
+| `authenticateApiKey` | `authApiKey` |
+| `validateApp` | `validateAppId` |
+| `authenticateWithApp` | `authApp` |
+
+可传 `AuthClientConfig`、已有 `AuthClient`，或不传（读环境变量）。
+
+`validateApp(config?, { required?, verify? })`：`required` / `verify` 默认均为 `true`；`verify: false` 只检查 header，注入最小化 app。
+
+### 守卫（不发网络请求）
+
+| 守卫 | 条件 | 失败 |
+|------|------|------|
+| `requireUser` | 有 `userInfo` | 401 |
+| `requireApp` | 有 `app` | 400 |
+| `requireApiKey` | 有 `apiKey` | 401 |
+| `requireUserAndApp` | 两者都有 | 401 / 400 |
+
+### 路由定义器
+
+`defineAuthRoute`、`defineOptionalAuthRoute`、`defineApiKeyRoute`、`defineAuthRouteWithApp`、`defineRouteWithApp`、`defineOptionalAuthRouteWithApp`、`defineFullAuthRoute`
+
+内置 `webhook?: boolean | { eventKey?, include?, exclude? }`（精简类型；完整能力见 `@vafast/webhook`）。
+
+## API
+
+### `createAuthClient(config?)`
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `baseUrl` | `AUTH_API_BASE_URL` | 缺则抛错 |
+| `apiKeyId` | `AUTH_SERVICE_API_KEY_ID` | 服务间 Bearer |
+| `apiKeySecret` | `AUTH_SERVICE_API_KEY_SECRET` | 与 ID 组成 `id:secret` |
+| `timeout` | `AUTH_API_TIMEOUT` 或 `5000` | 毫秒 |
+
+客户端方法：`verifyJwt`、`verifyApiKey`、`verifyApp`、`getUsersBatch`、`searchUsers`、`getUsersStats`。
+
+### `UserInfo` 组织相关字段（源码注释）
+
+| 字段 | 含义 |
+|------|------|
+| `organizationId` | 组织成员所属组织；组织成员身份直接归属 organization |
+| `accountType` | `organization_member` = 组织成员；`customer_user` = 客户应用终端用户 |
+| `isOrgMemberAccess` | 组织成员跨 app 访问时为 `true` |
+| `targetAppId` | 本次请求 `app-id` 指向的目标 app；跨 app 时与原始 `appId` 不同 |
+| `accessMode` | `direct` 或 `org_member_delegate` |
+
+另有基础字段：`id`、`appId`、`email`、`phone`、`avatar`、`status`、`roleId`、`nickname`、`verified`。  
+`VerifiedUserInfo` 可带 `app?: AppInfo`。`AppInfo.extensions` 为 auth-server 维护的结构化扩展（如 organizationId）。
+
+## 最佳实践
+
+- 路由组挂 `authWithApp`，叶子挂 `requireUser` 等守卫。
+- 公开接口不挂认证中间件。
+- 多中间件共享同一 `createAuthClient()` 实例。
+- 跨 app / 组织代理访问时读取 `accessMode` / `isOrgMemberAccess` / `targetAppId`。
+
+## 注意事项
+
+- 硬认证：没有「软登录失败继续」的预配置中间件。
+- 预配置依赖环境变量；测试请用工厂 + 显式 client。
+- `jwtAuth` 拒带 `:` 的 token；`apiKeyAuth` 要求 `id:secret`。
+- 用户凭证失败多为 **401**；`app-id` 问题多为 **400**。
+- 包内 `webhook` 类型只便于声明；实际分发需 `server.use(webhook(...))`。
+
+## 相关链接
+
+- [文档站点 · Auth Middleware](https://vafast.dev/middleware/auth-middleware)
+- [@vafast/webhook](../vafast-webhook)
+- [@vafast/jwt](../vafast-jwt)（本地签发/校验，不对接 auth-server）
 
 ## License
 

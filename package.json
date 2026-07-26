@@ -1,6 +1,6 @@
 {
   "name": "@vafast/auth-middleware",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Authentication middleware for Vafast - Generic JWT/API Key verification with dependency injection",
   "type": "module",
   "main": "./dist/index.mjs",
@@ -31,13 +31,14 @@
     "dist",
     "README.md"
   ],
+  "peerDependencies": {
+    "vafast": "<2.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.15.30",
     "tsdown": "^0.19.0-beta.4",
     "typescript": "^5.4.5",
+    "vafast": "file:../vafast",
     "vitest": "^4.0.17"
-  },
-  "peerDependencies": {
-    "vafast": "<2.0.0"
   }
 }
