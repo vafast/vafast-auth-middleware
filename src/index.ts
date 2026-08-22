@@ -14,16 +14,22 @@ import { defineMiddleware, withContext, err } from 'vafast'
 
 // ============ 通用类型定义 ============
 
+/** 应用上线模式，由 auth-server 按 app 下发 */
+export type AccessMode = 'development' | 'enterprise' | 'invite' | 'public'
+
 /**
  * 服务准入状态，由 auth-server 在验证响应中按 app 下发
  *
- * 邀请制是接入应用的通用机制：每个 app 通过 `inviteAccess.enabled` 独立开关。
- * 未开启时 granted 恒为 true，行为与未接入邀请制时完全一致。
+ * 每个 app 用上线模式（开发 / 企业内测 / 邀请内测 / 上线运营）控制对外姿态。
+ * 上线运营时 granted 恒为 true；其余阶段未开通账号 granted 为 false。
+ * 闸门只看 granted，不解析 clientKey，小程序与其它端同一套。
  */
 export interface ServiceAccessInfo {
-  /** 该 app 是否开启邀请制 */
+  /** 当前上线模式；旧版 auth-server 可能不下发 */
+  accessMode?: AccessMode
+  /** 是否处于受限阶段（非上线运营） */
   inviteOnly: boolean
-  /** 最终准入结论：应用未开启邀请制时恒为 true */
+  /** 最终准入结论：上线运营或组织成员代理时恒为 true */
   granted: boolean
   status: 'granted' | 'waitlisted'
 }
@@ -129,9 +135,9 @@ function getLocals<T>(req: Request): T | undefined {
 /** 账号未开通服务时返回的业务码，前端据此引导至候补页 */
 export const SERVICE_ACCESS_WAITLISTED_CODE = 4030001
 
-/** 账号未开通服务时的提示文案 */
+/** 账号未开通服务时的提示文案（不暗示一定有邀请码） */
 export const SERVICE_ACCESS_WAITLISTED_MESSAGE
-  = '当前处于邀请制内测，账号尚未开通服务，请填写邀请码或等待开通通知'
+  = '当前尚未对外开放，账号还不能使用该服务'
 
 type AuthMiddlewareFn<T extends object = object> = (
   req: Request,
@@ -143,7 +149,7 @@ type AuthMiddlewareFn<T extends object = object> = (
  *
  * 不走 throwAuthFailure：业务码 4030001 超出 400-599 会被归一成 401。
  * auth-server 未下发 serviceAccess 时放行，兼容旧版本。
- * 应用未开启 inviteAccess 时 granted 恒为 true，不会进入此分支。
+ * 上线运营时 granted 恒为 true，不会进入此分支。
  */
 function denyIfWaitlisted(userInfo: UserInfo | undefined, enforce: boolean): Response | null {
   if (!enforce || userInfo?.serviceAccess?.granted !== false) {

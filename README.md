@@ -27,7 +27,7 @@
 | 缺少/无效 `app-id` | **400** |
 | 守卫无 `userInfo` / `apiKey` | **401** |
 | 守卫无 `app` | **400** |
-| 邀请制候补（`serviceAccess.granted === false`） | **403**，业务码 `4030001` |
+| 未开通（`serviceAccess.granted === false`） | **403**，业务码 `4030001` |
 | auth-server 超时 / 不可用 | **504** / **503** 风格 |
 
 ### `app-id` 多租户
@@ -119,19 +119,17 @@ export const routes = defineRoutes([
 
 `validateApp(config?, { required?, verify? })`：`required` / `verify` 默认均为 `true`；`verify: false` 只检查 header，注入最小化 app。
 
-### 服务准入（邀请制，接入应用通用机制）
+### 服务准入（上线模式，接入应用通用机制）
 
 认证只回答「你是谁」。`auth` / `authenticate()` 默认再叠一层 `withServiceAccess`。
 
-邀请制按 **app** 开关，不是按产品。auth-server 根据该 app 的 `inviteAccess.enabled` 下发 `userInfo.serviceAccess`：
+对外姿态按 **app** 的上线模式，不是按产品、也不按 clientKey。auth-server 下发 `userInfo.serviceAccess`：
 
-- 未开启：`granted` 恒为 `true`，行为与未接入邀请制完全一致
-- 已开启且 `granted === false`：返回 **403** + `4030001`，不走 401，避免前端误判登出
+- 上线运营：`granted` 恒为 `true`
+- 开发 / 企业内测 / 邀请内测且 `granted === false`：返回 **403** + `4030001`，文案为「尚未对外开放」，不走 401，避免前端误判登出
 - 旧版 auth-server 不下发该字段时放行
 
-候补用户也必须访问的接口（兑换邀请码、提交开通申请、投诉举报）用 `*AllowWaitlisted`；组内个别接口再挂 `requireServiceAccess` 收紧。自定义组合用 `withServiceAccess(identityMiddleware)`。
-
-golds、sumusic、ONES 等接入应用升级本包后即可使用；每个 app 在空间设置里独立打开邀请制。
+闸门只看 `granted`，小程序与其它端无需单独适配。候补用户也必须访问的接口（兑换邀请码、提交开通申请、投诉举报）用 `*AllowWaitlisted`；组内个别接口再挂 `requireServiceAccess` 收紧。
 
 ### 守卫（不发网络请求）
 

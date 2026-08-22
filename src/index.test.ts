@@ -219,6 +219,7 @@ describe('服务准入闸门', () => {
 
     expect(response.status).toBe(403)
     expect(data.code).toBe(SERVICE_ACCESS_WAITLISTED_CODE)
+    expect(data.message).toBe('当前尚未对外开放，账号还不能使用该服务')
   })
 
   it('业务码不被归一成 401，避免前端触发登出死循环', async () => {
@@ -245,7 +246,7 @@ describe('服务准入闸门', () => {
     expect(next).toHaveBeenCalled()
   })
 
-  it('应用未开启邀请制时 granted 恒为 true，不拦截', async () => {
+  it('上线运营时 granted 恒为 true，不拦截', async () => {
     const next = vi.fn().mockResolvedValue(new Response('ok'))
     const openUser = {
       id: 'u_4',
