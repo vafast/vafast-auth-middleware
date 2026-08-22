@@ -4,6 +4,8 @@ import {
   authenticateJwt,
   authenticateApiKey,
   authenticate,
+  authenticateAllowWaitlisted,
+  withServiceAccess,
   validateApp,
   requireUserAndApp,
   requireApiKey,
@@ -14,6 +16,11 @@ import {
   defineRouteWithApp,
   defineOptionalAuthRouteWithApp,
   defineFullAuthRoute,
+  authAllowWaitlisted,
+  authWithAppAllowWaitlisted,
+  jwtAuthAllowWaitlisted,
+  apiKeyAuthAllowWaitlisted,
+  SERVICE_ACCESS_WAITLISTED_CODE,
   type AuthClientConfig,
 } from './index'
 
@@ -169,6 +176,142 @@ describe('Guards', () => {
 
   it('应该导出 requireApiKey guard', () => {
     expect(typeof requireApiKey).toBe('function')
+  })
+})
+
+describe('服务准入闸门', () => {
+  const grantedUser = {
+    id: 'u_1',
+    appId: 'app_1',
+    status: 'normal',
+    serviceAccess: { inviteOnly: true, granted: true, status: 'granted' },
+  }
+  const waitlistedUser = {
+    id: 'u_2',
+    appId: 'app_1',
+    status: 'normal',
+    serviceAccess: { inviteOnly: true, granted: false, status: 'waitlisted' },
+  }
+
+  function clientOf(userInfo: unknown) {
+    return {
+      verifyJwt: vi.fn().mockResolvedValue({ data: userInfo }),
+      verifyApiKey: vi.fn().mockResolvedValue({
+        data: { userInfo, apiKey: { id: 'k_1', name: 'test', appId: 'app_1' } },
+      }),
+      verifyApp: vi.fn(),
+      getUsersBatch: vi.fn(),
+      searchUsers: vi.fn(),
+      getUsersStats: vi.fn(),
+    }
+  }
+
+  function jwtRequest() {
+    return new Request('http://localhost/test', {
+      headers: { authorization: 'Bearer jwt-token', 'app-id': 'app_1' },
+    })
+  }
+
+  it('候补用户被拦截并返回 403 与业务码 4030001', async () => {
+    const middleware = authenticate(clientOf(waitlistedUser))
+    const response = await middleware(jwtRequest(), vi.fn())
+    const data = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(data.code).toBe(SERVICE_ACCESS_WAITLISTED_CODE)
+  })
+
+  it('业务码不被归一成 401，避免前端触发登出死循环', async () => {
+    const middleware = authenticate(clientOf(waitlistedUser))
+    const response = await middleware(jwtRequest(), vi.fn())
+
+    expect(response.status).not.toBe(401)
+  })
+
+  it('已开通用户正常放行', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const middleware = authenticate(clientOf(grantedUser))
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ userInfo: grantedUser }))
+  })
+
+  it('auth-server 未下发 serviceAccess 时放行，兼容旧版本', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const legacyUser = { id: 'u_3', appId: 'app_1', status: 'normal' }
+    const middleware = authenticate(clientOf(legacyUser))
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('应用未开启邀请制时 granted 恒为 true，不拦截', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const openUser = {
+      id: 'u_4',
+      appId: 'app_1',
+      status: 'normal',
+      serviceAccess: { inviteOnly: false, granted: true, status: 'granted' },
+    }
+    const middleware = authenticate(clientOf(openUser))
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('关闭强制检查后候补用户可放行', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const middleware = authenticateAllowWaitlisted(clientOf(waitlistedUser))
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('withServiceAccess(identity, false) 等价于跳过准入', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const middleware = withServiceAccess(authenticateAllowWaitlisted(clientOf(waitlistedUser)), false)
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('JWT 原样透传 auth-server 下发的扩展字段', async () => {
+    const next = vi.fn().mockResolvedValue(new Response('ok'))
+    const user = {
+      ...grantedUser,
+      organizationId: 'org_1',
+      accountType: 'organization_member',
+      accessMode: 'direct',
+    }
+    const middleware = authenticateJwt(clientOf(user))
+    await middleware(jwtRequest(), next)
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      userInfo: expect.objectContaining({
+        organizationId: 'org_1',
+        accountType: 'organization_member',
+        serviceAccess: grantedUser.serviceAccess,
+      }),
+    }))
+  })
+
+  it('候补用户无法用 API Key 绕过', async () => {
+    const middleware = authenticate(clientOf(waitlistedUser))
+    const req = new Request('http://localhost/test', {
+      headers: { authorization: 'Bearer ak_test:sk_test', 'app-id': 'app_1' },
+    })
+    const response = await middleware(req, vi.fn())
+    const data = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(data.code).toBe(SERVICE_ACCESS_WAITLISTED_CODE)
+  })
+
+  it('导出候补放行中间件', () => {
+    expect(typeof authAllowWaitlisted).toBe('function')
+    expect(typeof authWithAppAllowWaitlisted).toBe('function')
+    expect(typeof jwtAuthAllowWaitlisted).toBe('function')
+    expect(typeof apiKeyAuthAllowWaitlisted).toBe('function')
   })
 })
 
